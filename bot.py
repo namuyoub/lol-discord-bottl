@@ -9,7 +9,6 @@ import urllib.request
 import csv
 from flask import Flask
 
-# --- Flask Keep Alive ---
 app = Flask('')
 
 @app.route('/')
@@ -28,64 +27,18 @@ MAX_DIAMOND = 2
 MAX_MASTER = 1
 ROLES = ["TOP", "JGL", "MID", "ADC", "SUP"]
 
-# --- スプレッドシートの「ウェブに公開(CSV)」のURL ---
 SPREADSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1DnzBEIyP6ss0aaz3-J0Gq8jppwD9ZmncTnTHsBq8K3g/export?format=csv"
 
 RANK_DATA = {
-    "CHALLENGER": {
-        "pt": 8,
-        "label": "Challenger (8pt)",
-        "short": "Challenger",
-        "color": discord.Color.red(),
-    },
-    "GRANDMASTER": {
-        "pt": 7,
-        "label": "Grandmaster (7pt)",
-        "short": "GM",
-        "color": discord.Color.orange(),
-    },
-    "MASTER": {
-        "pt": 6,
-        "label": "Master (6pt)",
-        "short": "Master",
-        "color": discord.Color.purple(),
-    },
-    "DIAMOND_1_2": {
-        "pt": 5,
-        "label": "Diamond I-II (5pt)",
-        "short": "D1-2",
-        "color": discord.Color.blue(),
-    },
-    "DIAMOND_3_4": {
-        "pt": 4,
-        "label": "Diamond III-IV (4pt)",
-        "short": "D3-4",
-        "color": discord.Color.blue(),
-    },
-    "EMERALD_1_2": {
-        "pt": 3,
-        "label": "Emerald I-II (3pt)",
-        "short": "E1-2",
-        "color": discord.Color.green(),
-    },
-    "EMERALD_3_4": {
-        "pt": 2,
-        "label": "Emerald III-IV (2pt)",
-        "short": "E3-4",
-        "color": discord.Color.green(),
-    },
-    "PLATINUM": {
-        "pt": 1,
-        "label": "Platinum (1pt)",
-        "short": "Platinum",
-        "color": discord.Color.gold(),
-    },
-    "COACH": {
-        "pt": 0,
-        "label": "コーチ (0pt)",
-        "short": "Coach",
-        "color": discord.Color.dark_grey(),
-    },
+    "CHALLENGER": {"pt": 8, "label": "Challenger (8pt)", "short": "Challenger", "color": discord.Color.red()},
+    "GRANDMASTER": {"pt": 7, "label": "Grandmaster (7pt)", "short": "GM", "color": discord.Color.orange()},
+    "MASTER": {"pt": 6, "label": "Master (6pt)", "short": "Master", "color": discord.Color.purple()},
+    "DIAMOND_1_2": {"pt": 5, "label": "Diamond I-II (5pt)", "short": "D1-2", "color": discord.Color.blue()},
+    "DIAMOND_3_4": {"pt": 4, "label": "Diamond III-IV (4pt)", "short": "D3-4", "color": discord.Color.blue()},
+    "EMERALD_1_2": {"pt": 3, "label": "Emerald I-II (3pt)", "short": "E1-2", "color": discord.Color.green()},
+    "EMERALD_3_4": {"pt": 2, "label": "Emerald III-IV (2pt)", "short": "E3-4", "color": discord.Color.green()},
+    "PLATINUM": {"pt": 1, "label": "Platinum (1pt)", "short": "Platinum", "color": discord.Color.gold()},
+    "COACH": {"pt": 0, "label": "コーチ (0pt)", "short": "Coach", "color": discord.Color.dark_grey()},
 }
 
 def init_db():
@@ -111,21 +64,14 @@ def load_players_from_sheet():
                     point = int(row.get("ポイント", 0))
                 except ValueError:
                     point = 0
-                
                 roles_str = row.get("希望ロール", "")
                 roles = [r.strip().upper() for r in roles_str.split(",")] if roles_str else []
                 rank = row.get("ランク", "")
-                
-                players[str(name).strip()] = {
-                    "point": point,
-                    "roles": roles,
-                    "rank": rank
-                }
+                players[str(name).strip()] = {"point": point, "roles": roles, "rank": rank}
     except Exception as e:
         print(f"⚠️ スプレッドシート読み込みエラー: {e}")
     return players
 
-# --- 選手用登録モーダル（入力Checkへ転送） ---
 class PlayerModal(discord.ui.Modal, title="Riot ID連携・プレイヤー登録"):
     riot = discord.ui.TextInput(label="Riot ID (例: Name#JP1)", placeholder="名前#タグ", required=True)
     role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JG / MID / ADC / SUP / コーチ", required=True)
@@ -141,28 +87,23 @@ class PlayerModal(discord.ui.Modal, title="Riot ID連携・プレイヤー登録
             return
         g_name, _ = self.riot.value.split("#", 1)
         info = RANK_DATA[self.rank]
-
         conn = sqlite3.connect("lol_server.db")
         c = conn.cursor()
         c.execute("INSERT OR REPLACE INTO players VALUES (?, ?, ?, ?, ?, ?, ?, 'FA')",
                   (interaction.user.id, self.riot.value, "PUUID", self.rank, info["pt"], self.role.value, self.champ.value))
         conn.commit()
         conn.close()
-
         nick = f"{g_name} / {self.role.value} / {info['short']}"[:32]
         try:
             await interaction.user.edit(nick=nick)
         except:
             pass
-
         await interaction.response.send_message(f"✅ 登録完了！表示名を `{nick}` に変更しました。", ephemeral=True)
-
         target_ch = None
         for ch in interaction.guild.text_channels:
             if "入力check" in ch.name.lower() or "入力チェック" in ch.name.lower() or "1566055273146093599" in str(ch.id):
                 target_ch = ch
                 break
-
         if target_ch:
             opgg = f"https://www.op.gg/summoners/jp/{urllib.parse.quote(self.riot.value.replace('#', '-'))}"
             emb = discord.Embed(title="📝 新規プレイヤー登録・チェック用", description=f"{interaction.user.mention} が登録しました。", color=discord.Color.gold())
@@ -194,7 +135,6 @@ class MainView(discord.ui.View):
     async def reg(self, interaction, button):
         await interaction.response.send_message("👇 最高ランク（またはコーチ）を選択：", view=PlayerSelView(), ephemeral=True)
 
-# --- 運営用手動FAカード投稿モーダル ---
 class FaModal(discord.ui.Modal, title="FA選手カード作成（手動）"):
     riot = discord.ui.TextInput(label="Riot ID", placeholder="名前#タグ", required=True)
     role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JG / MID / ADC / SUP", required=True)
@@ -221,114 +161,7 @@ class FaSelect(discord.ui.Select):
         super().__init__(placeholder="選手のランクを選択してください", options=opts)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(FaModal(self.values[0]))
 
-class FaSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=180)
-        self.add_item(FaSelect())
-
-# --- カスタム参加管理ビュー ---
-class CustomJoinView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="参加する", style=discord.ButtonStyle.green, custom_id="custom_join_btn")
-    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        message = interaction.message
-        embed = message.embeds[0]
-        field_index = -1
-        for i, field in enumerate(embed.fields):
-            if "参加者一覧" in field.name:
-                field_index = i
-                break
-        current_desc = embed.fields[field_index].value if field_index != -1 else "まだ参加者はいません。"
-        participants = [] if current_desc == "まだ参加者はいません。" else current_desc.split("\n")
-        user_mention = interaction.user.mention
-        if user_mention not in participants:
-            participants.append(user_mention)
-        new_value = "\n".join(participants) if participants else "まだ参加者はいません。"
-        count = len(participants)
-        embed.set_field_at(field_index, name=f"参加者一覧 ({count}人)", value=new_value, inline=False)
-        await message.edit(embed=embed)
-        await interaction.response.send_message("✅ 参加を受け付けました！", ephemeral=True)
-
-    @discord.ui.button(label="辞退する", style=discord.ButtonStyle.red, custom_id="custom_leave_btn")
-    async def leave_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        message = interaction.message
-        embed = message.embeds[0]
-        field_index = -1
-        for i, field in enumerate(embed.fields):
-            if "参加者一覧" in field.name:
-                field_index = i
-                break
-        if field_index == -1:
-            await interaction.response.send_message("❌ リストが見つかりません。", ephemeral=True)
-            return
-        current_desc = embed.fields[field_index].value
-        participants = current_desc.split("\n") if current_desc != "まだ参加者はいません。" else []
-        user_mention = interaction.user.mention
-        if user_mention in participants:
-            participants.remove(user_mention)
-        new_value = "\n".join(participants) if participants else "まだ参加者はいません。"
-        count = len(participants)
-        embed.set_field_at(field_index, name=f"参加者一覧 ({count}人)", value=new_value, inline=False)
-        await message.edit(embed=embed)
-        await interaction.response.send_message("❌ 辞退しました。", ephemeral=True)
-
-class CustomCreateModal(discord.ui.Modal, title="カスタム開催・詳細設定"):
-    title_input = discord.ui.TextInput(label="カスタムタイトル", placeholder="ワイワイカスタム", required=True)
-    date_input = discord.ui.TextInput(label="日程", placeholder="11月4日", required=True)
-    time_input = discord.ui.TextInput(label="時間", placeholder="21:00〜", required=True)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        embed = discord.Embed(title=f"🎮 {self.title_input.value}", description=f"**📅 日程:** {self.date_input.value}\n**⏰ 時間:** {self.time_input.value}", color=discord.Color.blue())
-        embed.add_field(name="参加者一覧 (0人)", value="まだ参加者はいません。", inline=False)
-        await interaction.channel.send(content="@everyone 新規カスタムの募集が開始されました！", embed=embed, view=CustomJoinView())
-        await interaction.response.send_message("✅ パネルを作成しました！", ephemeral=True)
-
-class CustomPanelTriggerView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="📅 新規カスタムを募集する", style=discord.ButtonStyle.blurple, custom_id="trigger_custom_modal")
-    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(CustomCreateModal())
-
-class TeamTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🚩 チーム結成を申請する", style=discord.ButtonStyle.green, custom_id="ticket_form_create")
-    async def btn_create(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "結成")
-
-    @discord.ui.button(label="🗑️ チーム解散を申請する", style=discord.ButtonStyle.red, custom_id="ticket_form_disband")
-    async def btn_disband(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.create_ticket(interaction, "解散")
-
-    async def create_ticket(self, interaction: discord.Interaction, action_type: str):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        user = interaction.user
-        channel_name = f"{action_type}-{user.name}"
-        if discord.utils.get(guild.text_channels, name=channel_name):
-            await interaction.followup.send("⚠️ すでに専用チャンネルがあります。", ephemeral=True)
-            return
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True)
-        }
-        try:
-            ch = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
-            emb = discord.Embed(title=f"🏆 チーム{action_type}申請", description=f"{user.mention} さんようこそ！", color=discord.Color.green())
-            await ch.send(embed=emb)
-            await interaction.followup.send(f"✅ チャンネルを作成しました 👉 {ch.mention}", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
-
-# --- マッチング検索用の名前入力モーダル ---
 class MatchInputModal(discord.ui.Modal, title="チーム自動マッチング設定"):
     target_name = discord.ui.TextInput(label="軸にする選手名（スプレッドシートの表記）", placeholder="例: ふうこ", required=True)
 
@@ -369,7 +202,7 @@ class MatchInputModal(discord.ui.Modal, title="チーム自動マッチング設
                 my_assigned_role = r
                 break
         if not my_assigned_role:
-                my_assigned_role = self.preferred_roles[0]
+            my_assigned_role = self.preferred_roles[0]
 
         matched_team[my_assigned_role] = (target_key, author_point)
         assigned_roles.remove(my_assigned_role)
@@ -448,7 +281,6 @@ class MatchRoleSelectView(discord.ui.View):
         await interaction.response.send_modal(modal)
         self.stop()
 
-# --- Bot 本体 & スラッシュコマンド ---
 class Bot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=discord.Intents.all(), max_messages=1000, chunk_guilds_at_startup=False)
@@ -460,15 +292,11 @@ class Bot(commands.Bot):
         self.add_view(CustomPanelTriggerView())
         self.add_view(TeamTicketView())
         
-        # サーバIDを設定
-        MY_GUILD_ID = discord.Object(id=1569244463136637058)
-        self.tree.copy_global_to(guild=MY_GUILD_ID)
-        await self.tree.sync(guild=MY_GUILD_ID)
-        print("コマンドを即時同期しました！")
+        await self.tree.sync()
+        print("コマンドをグローバル同期しました！")
 
 bot = Bot()
 
-# --- 管理人専用コマンド群（administrator=True） ---
 @bot.tree.command(name="setup_panel", description="【管理】選手用RiotID連携パネルを設置")
 @app_commands.checks.has_permissions(administrator=True)
 async def setup_panel(interaction: discord.Interaction):
