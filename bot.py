@@ -161,6 +161,111 @@ class FaSelect(discord.ui.Select):
         super().__init__(placeholder="選手のランクを選択してください", options=opts)
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(FaModal(self.values[0]))
+
+class FaSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.add_item(FaSelect())
+
+class CustomJoinView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="参加する", style=discord.ButtonStyle.green, custom_id="custom_join_btn")
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        message = interaction.message
+        embed = message.embeds[0]
+        field_index = -1
+        for i, field in enumerate(embed.fields):
+            if "参加者一覧" in field.name:
+                field_index = i
+                break
+        current_desc = embed.fields[field_index].value if field_index != -1 else "まだ参加者はいません。"
+        participants = [] if current_desc == "まだ参加者はいません。" else current_desc.split("\n")
+        user_mention = interaction.user.mention
+        if user_mention not in participants:
+            participants.append(user_mention)
+        new_value = "\n".join(participants) if participants else "まだ参加者はいません。"
+        count = len(participants)
+        embed.set_field_at(field_index, name=f"参加者一覧 ({count}人)", value=new_value, inline=False)
+        await message.edit(embed=embed)
+        await interaction.response.send_message("✅ 参加を受け付けました！", ephemeral=True)
+
+    @discord.ui.button(label="辞退する", style=discord.ButtonStyle.red, custom_id="custom_leave_btn")
+    async def leave_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        message = interaction.message
+        embed = message.embeds[0]
+        field_index = -1
+        for i, field in enumerate(embed.fields):
+            if "参加者一覧" in field.name:
+                field_index = i
+                break
+        if field_index == -1:
+            await interaction.response.send_message("❌ リストが見つかりません。", ephemeral=True)
+            return
+        current_desc = embed.fields[field_index].value
+        participants = current_desc.split("\n") if current_desc != "まだ参加者はいません。" else []
+        user_mention = interaction.user.mention
+        if user_mention in participants:
+            participants.remove(user_mention)
+        new_value = "\n".join(participants) if participants else "まだ参加者はいません。"
+        count = len(participants)
+        embed.set_field_at(field_index, name=f"参加者一覧 ({count}人)", value=new_value, inline=False)
+        await message.edit(embed=embed)
+        await interaction.response.send_message("❌ 辞退しました。", ephemeral=True)
+
+class CustomCreateModal(discord.ui.Modal, title="カスタム開催・詳細設定"):
+    title_input = discord.ui.TextInput(label="カスタムタイトル", placeholder="ワイワイカスタム", required=True)
+    date_input = discord.ui.TextInput(label="日程", placeholder="11月4日", required=True)
+    time_input = discord.ui.TextInput(label="時間", placeholder="21:00〜", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(title=f"🎮 {self.title_input.value}", description=f"**📅 日程:** {self.date_input.value}\n**⏰ 時間:** {self.time_input.value}", color=discord.Color.blue())
+        embed.add_field(name="参加者一覧 (0人)", value="まだ参加者はいません。", inline=False)
+        await interaction.channel.send(content="@everyone 新規カスタムの募集が開始されました！", embed=embed, view=CustomJoinView())
+        await interaction.response.send_message("✅ パネルを作成しました！", ephemeral=True)
+
+class CustomPanelTriggerView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📅 新規カスタムを募集する", style=discord.ButtonStyle.blurple, custom_id="trigger_custom_modal")
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CustomCreateModal())
+
+class TeamTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🚩 チーム結成を申請する", style=discord.ButtonStyle.green, custom_id="ticket_form_create")
+    async def btn_create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "結成")
+
+    @discord.ui.button(label="🗑️ チーム解散を申請する", style=discord.ButtonStyle.red, custom_id="ticket_form_disband")
+    async def btn_disband(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "解散")
+
+    async def create_ticket(self, interaction: discord.Interaction, action_type: str):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        channel_name = f"{action_type}-{user.name}"
+        if discord.utils.get(guild.text_channels, name=channel_name):
+            await interaction.followup.send("⚠️ すでに専用チャンネルがあります。", ephemeral=True)
+            return
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True)
+        }
+        try:
+            ch = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+            emb = discord.Embed(title=f"🏆 チーム{action_type}申請", description=f"{user.mention} さんようこそ！", color=discord.Color.green())
+            await ch.send(embed=emb)
+            await interaction.followup.send(f"✅ チャンネルを作成しました 👉 {ch.mention}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
 
 class MatchInputModal(discord.ui.Modal, title="チーム自動マッチング設定"):
     target_name = discord.ui.TextInput(label="軸にする選手名（スプレッドシートの表記）", placeholder="例: ふうこ", required=True)
