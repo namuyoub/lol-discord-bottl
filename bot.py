@@ -91,4 +91,162 @@ class PlayerModal(discord.ui.Modal, title="Riot ID連携・プレイヤー登録
         info = RANK_DATA[self.rank]
         conn = sqlite3.connect("lol_server.db")
         c = conn.cursor()
-        c.execute("INSERT
+        c.execute("INSERT OR REPLACE INTO players VALUES (?, ?, ?, ?, ?, ?, ?, 'FA')",
+                  (interaction.user.id, self.riot.value, "PUUID", self.rank, info["pt"], self.role.value, self.champ.value))
+        conn.commit()
+        conn.close()
+        nick = f"{g_name} / {self.role.value} / {info['short']}"[:32]
+        try:
+            await interaction.user.edit(nick=nick)
+        except:
+            pass
+        await interaction.response.send_message(f"✅ 登録完了！表示名を `{nick}` に変更しました。", ephemeral=True)
+        target_ch = None
+        for ch in interaction.guild.text_channels:
+            if "入力check" in ch.name.lower() or "入力チェック" in ch.name.lower() or "1566055273146093599" in str(ch.id):
+                target_ch = ch
+                break
+        if target_ch:
+            opgg = f"https://www.op.gg/summoners/jp/{urllib.parse.quote(self.riot.value.replace('#', '-'))}"
+            emb = discord.Embed(title="📝 新規プレイヤー登録・チェック用", description=f"{interaction.user.mention} が登録しました。", color=discord.Color.gold())
+            emb.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+            emb.add_field(name="🎮 Riot ID", value=f"[{self.riot.value}]({opgg})", inline=True)
+            emb.add_field(name="🏆 ランク", value=info["label"], inline=True)
+            emb.add_field(name="⚔️ ロール", value=self.role.value, inline=True)
+            emb.add_field(name="💬 自己PR", value=self.champ.value or "なし", inline=False)
+            await target_ch.send(embed=emb)
+
+class PlayerSelect(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=v["label"], value=k) for k, v in RANK_DATA.items()]
+        super().__init__(placeholder="最高ランクまたはコーチを選択してください", options=opts)
+
+    async def callback(self, interaction):
+        await interaction.response.send_modal(PlayerModal(self.values[0]))
+
+class PlayerSelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.add_item(PlayerSelect())
+
+class MainView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎮 Riot IDを連携・登録する", style=discord.ButtonStyle.success, custom_id="reg_btn")
+    async def reg(self, interaction, button):
+        await interaction.response.send_message("👇 最高ランク（またはコーチ）を選択：", view=PlayerSelView(), ephemeral=True)
+
+class FaModal(discord.ui.Modal, title="FA選手カード作成（手動）"):
+    riot = discord.ui.TextInput(label="Riot ID", placeholder="名前#タグ", required=True)
+    role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JG / MID / ADC / SUP", required=True)
+    champ = discord.ui.TextInput(label="自己PR", style=discord.TextStyle.paragraph, required=False)
+
+    def __init__(self, rank_key):
+        super().__init__()
+        self.rank_key = rank_key
+
+    async def on_submit(self, interaction: discord.Interaction):
+        info = RANK_DATA[self.rank_key]
+        opgg = f"https://www.op.gg/summoners/jp/{urllib.parse.quote(self.riot.value.replace('#', '-'))}"
+        emb = discord.Embed(title="📝 新規プレイヤー登録", description=f"{interaction.user.mention} が登録しました。", color=info["color"])
+        emb.set_author(name=f"{self.riot.value.split('#')[0]} / {self.role.value} / {info['short']}", icon_url=interaction.user.display_avatar.url)
+        emb.add_field(name="🎮 Riot ID", value=f"[{self.riot.value}]({opgg})", inline=True)
+        emb.add_field(name="🏆 ランク", value=info["label"], inline=True)
+        emb.add_field(name="⚔️ ロール", value=self.role.value, inline=True)
+        await interaction.channel.send(embed=emb)
+        await interaction.response.send_message("✅ FAカードを投稿しました！", ephemeral=True)
+
+class FaSelect(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=v["label"], value=k) for k, v in RANK_DATA.items()]
+        super().__init__(placeholder="選手のランクを選択してください", options=opts)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(FaModal(self.values[0]))
+
+class FaSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.add_item(FaSelect())
+
+class CustomCreateModal(discord.ui.Modal, title="カスタム・イベント募集設定"):
+    title_input = discord.ui.TextInput(label="募集タイトル", placeholder="ワイワイカスタム / ノーマル募集", required=True)
+    date_input = discord.ui.TextInput(label="日程", placeholder="11月4日", required=True)
+    time_input = discord.ui.TextInput(label="時間", placeholder="21:00〜", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title=f"🎮 {self.title_input.value}", 
+            description=f"**📅 日程:** {self.date_input.value}\n**⏰ 時間:** {self.time_input.value}\n\n👇 参加される方は、下の **:sannka:** スタンプを押してください！自動で専用スレッドが作成され、参加メンバーに追加されます。", 
+            color=discord.Color.blue()
+        )
+        
+        msg = await interaction.channel.send(content="@everyone 新しい募集が開始されました！", embed=embed)
+        
+        try:
+            sannka_emoji = discord.utils.get(interaction.guild.emojis, name="sannka")
+            if sannka_emoji:
+                await msg.add_reaction(sannka_emoji)
+            else:
+                await msg.add_reaction("✅")
+        except:
+            pass
+
+        try:
+            thread = await msg.create_thread(name=f"🎮┃{self.title_input.value} ({self.date_input.value})", auto_archive_duration=1440)
+            await thread.send(f"🧵 専用スレッドを作成しました！このスレッド内でわちゃわちゃ作戦会議や通話のやり取りをしてください✨")
+            
+            conn = sqlite3.connect("lol_server.db")
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO recruit_threads VALUES (?, ?)", (msg.id, thread.id))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"スレッド作成エラー: {e}")
+
+        await interaction.response.send_message("✅ 募集パネルと専用スレッドを作成しました！", ephemeral=True)
+
+class CustomPanelTriggerView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="📅 新規募集パネルを立てる", style=discord.ButtonStyle.blurple, custom_id="trigger_custom_modal")
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(CustomCreateModal())
+
+class TeamTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🚩 チーム結成を申請する", style=discord.ButtonStyle.green, custom_id="ticket_form_create")
+    async def btn_create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "結成")
+
+    @discord.ui.button(label="🗑️ チーム解散を申請する", style=discord.ButtonStyle.red, custom_id="ticket_form_disband")
+    async def btn_disband(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "解散")
+
+    async def create_ticket(self, interaction: discord.Interaction, action_type: str):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        channel_name = f"{action_type}-{user.name}"
+        if discord.utils.get(guild.text_channels, name=channel_name):
+            await interaction.followup.send("⚠️ すでに専用チャンネルがあります。", ephemeral=True)
+            return
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, view_channel=True)
+        }
+        try:
+            ch = await guild.create_text_channel(name=channel_name, overwrites=overwrites)
+            emb = discord.Embed(title=f"🏆 チーム{action_type}申請", description=f"{user.mention} さんようこそ！", color=discord.Color.green())
+            await ch.send(embed=emb)
+            await interaction.followup.send(f"✅ チャンネルを作成しました 👉 {ch.mention}", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
+
+class MatchInputModal(discord.ui.Modal, title="チーム自動マッチング設定"):
+    target_name = discord.ui.TextInput(label
