@@ -106,6 +106,8 @@ class NexusBot(commands.Bot):
         # Persistent views: their buttons continue working after a restart.
         self.add_view(MainView())
         self.add_view(CustomPanelTriggerView())
+        for kind in RECRUIT_CHANNELS:
+            self.add_view(RecruitmentView(kind))
         try:
             synced = await self.tree.sync()
             print(f"Slash commands synced: {len(synced)}")
@@ -253,6 +255,60 @@ class FaPanelView(discord.ui.View):
     async def open_fa(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(FaModal())
 
+# ---------- Fixed-channel recruitment buttons ----------
+class RecruitmentView(discord.ui.View):
+    def __init__(self, kind: str):
+        super().__init__(timeout=None)
+        self.kind = kind
+        # custom_id must be stable for persistent views
+        button = discord.ui.Button(
+            label="🙋 参加する（スレッド作成・参加）",
+            style=discord.ButtonStyle.success,
+            custom_id=f"nexus:join:{kind}"
+        )
+        button.callback = self.join_recruitment
+        self.add_item(button)
+
+    async def join_recruitment(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("サーバー内の募集チャンネルで操作してください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        # One thread per panel message; create it on first click, reuse afterwards.
+        with db() as conn:
+            row = conn.execute("SELECT thread_id FROM recruit_threads WHERE message_id=?",
+                              (interaction.message.id,)).fetchone()
+        thread = interaction.guild.get_thread(row[0]) if row else None
+        if row and thread is None:
+            try:
+                thread = await interaction.guild.fetch_channel(row[0])
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                thread = None
+        if thread is None:
+            try:
+                thread = await interaction.message.create_thread(
+                    name=f"🎮┃{self.kind}"[:100], auto_archive_duration=1440
+                )
+                await thread.send(f"🧵 **{self.kind}** の募集スレッドです。参加者はこちらで相談してください。")
+                with db() as conn:
+                    conn.execute("INSERT OR REPLACE INTO recruit_threads(message_id, thread_id) VALUES (?, ?)",
+                                 (interaction.message.id, thread.id))
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                print(f"Recruit thread creation failed: {exc}")
+                await interaction.followup.send("スレッドを作成できませんでした。Botの権限を確認してください。", ephemeral=True)
+                return
+        try:
+            await thread.add_user(interaction.user)
+            with db() as conn:
+                conn.execute("INSERT OR IGNORE INTO recruitment_members(message_id, discord_id) VALUES (?, ?)",
+                             (interaction.message.id, interaction.user.id))
+            await thread.send(f"🙋 {interaction.user.mention} が参加しました。")
+            await interaction.followup.send(f"参加しました！こちらです：{thread.mention}", ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"Could not add member to recruitment thread: {exc}")
+            await interaction.followup.send(f"スレッドは作成済みです：{thread.mention}\nBotにスレッド参加者追加権限がない可能性があります。", ephemeral=True)
+
 # ---------- Custom recruitment ----------
 class CustomCreateModal(discord.ui.Modal, title="カスタム・イベント募集設定"):
     title_input = discord.ui.TextInput(label="募集タイトル", placeholder="ワイワイカスタム / ノーマル募集", required=True, max_length=80)
@@ -276,7 +332,13 @@ class CustomCreateModal(discord.ui.Modal, title="カスタム・イベント募�
             color=discord.Color.blue()
         )
         await interaction.response.send_message("募集を作成しています…", ephemeral=True)
-        msg = await interaction.channel.send(content="@everyone 新しい募集が開始されました！", embed=embed)
+        custom_role = discord.utils.get(interaction.guild.roles, name=CUSTOM_ROLE_NAME.lstrip("@"))
+        role_mention = custom_role.mention if custom_role else "@カスタム（ロール未設定）"
+        msg = await interaction.channel.send(
+            content=f"{role_mention} 新しいカスタム募集です！",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(roles=[custom_role] if custom_role else [], users=False, everyone=False)
+        )
         await msg.add_reaction("✅")
 
         try:
@@ -382,6 +444,47 @@ async def custom_panel(interaction: discord.Interaction):
     embed = discord.Embed(title="📅 カスタム・イベント募集", description="ボタンから新しい募集を作成できます。", color=discord.Color.blue())
     await interaction.channel.send(embed=embed, view=CustomPanelTriggerView())
     await interaction.response.send_message("✅ カスタム募集パネルを設置しました。", ephemeral=True)
+
+@bot.tree.command(name="setup_recruitments", description="指定チャンネルに募集参加パネルを設置（管理者）")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_recruitments(interaction: discord.Interaction):
+    if not interaction.guild:
+        await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    results = []
+    for kind, channel_id in RECRUIT_CHANNELS.items():
+        channel = interaction.guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            results.append(f"❌ {kind}: チャンネルが見つかりません ({channel_id})")
+            continue
+        embed = discord.Embed(
+            title=f"🎮 {kind}",
+            description="下の **参加する** ボタンを押すと専用スレッドが作成（既存スレッドがあれば再利用）され、参加できます。",
+            color=discord.Color.green()
+        )
+        try:
+            await channel.send(embed=embed, view=RecruitmentView(kind))
+            results.append(f"✅ {kind}: 設置完了")
+        except discord.HTTPException as exc:
+            results.append(f"❌ {kind}: {exc}")
+    custom_channel = interaction.guild.get_channel(CUSTOM_CHANNEL_ID)
+    if isinstance(custom_channel, discord.TextChannel):
+        role = discord.utils.get(interaction.guild.roles, name=CUSTOM_ROLE_NAME.lstrip("@"))
+        mention = role.mention if role else "@カスタム（ロール未検出）"
+        try:
+            await custom_channel.send(
+                f"{mention} カスタム募集はこちらから作成してください。",
+                embed=discord.Embed(title="🛠️ カスタム募集作成", description="ボタンから日時・タイトルを入力して募集を立てられます。", color=discord.Color.blurple()),
+                view=CustomPanelTriggerView(),
+                allowed_mentions=discord.AllowedMentions(roles=[role] if role else [], users=False, everyone=False)
+            )
+            results.append("✅ カスタム募集チャンネル: 設置完了（@カスタムロールのみ通知）")
+        except discord.HTTPException as exc:
+            results.append(f"❌ カスタム募集チャンネル: {exc}")
+    else:
+        results.append(f"❌ カスタム募集チャンネルが見つかりません ({CUSTOM_CHANNEL_ID})")
+    await interaction.followup.send("\\n".join(results), ephemeral=True)
 
 @bot.tree.command(name="profile", description="自分の登録情報を確認")
 async def profile(interaction: discord.Interaction):
