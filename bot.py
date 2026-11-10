@@ -1,33 +1,25 @@
+# Nexus League Bot - runnable starter/completion
+# Python 3.10+ / discord.py 2.x
+# Token is read from the DISCORD_TOKEN environment variable.
+
 import os
-from threading import Thread
+import sqlite3
+import threading
+from urllib.parse import quote
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-import sqlite3
-import urllib.parse
-import urllib.request
-import csv
 from flask import Flask
 
-app = Flask('')
-
-@app.route('/')
-def home():
-    return 'Nexus League Bot is running!'
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
-
+# ---------- Configuration ----------
+TOKEN = os.getenv("DISCORD_TOKEN")
+DB_PATH = os.getenv("DB_PATH", "lol_server.db")
+WEB_PORT = int(os.getenv("PORT", "8080"))
 TEAM_POINT_LIMIT = 16
 MAX_DIAMOND = 2
 MAX_MASTER = 1
-ROLES = ["TOP", "JGL", "MID", "ADC", "SUP"]
-
-SPREADSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1DnzBEIyP6ss0aaz3-J0Gq8jppwD9ZmncTnTHsBq8K3g/export?format=csv"
+ROLES = ["TOP", "JGL", "MID", "ADC", "SUP", "コーチ"]
 
 RANK_DATA = {
     "CHALLENGER": {"pt": 8, "label": "Challenger (8pt)", "short": "Challenger", "color": discord.Color.red()},
@@ -37,91 +29,173 @@ RANK_DATA = {
     "DIAMOND_3_4": {"pt": 4, "label": "Diamond III-IV (4pt)", "short": "D3-4", "color": discord.Color.blue()},
     "EMERALD_1_2": {"pt": 3, "label": "Emerald I-II (3pt)", "short": "E1-2", "color": discord.Color.green()},
     "EMERALD_3_4": {"pt": 2, "label": "Emerald III-IV (2pt)", "short": "E3-4", "color": discord.Color.green()},
-    "PLATINUM": {"pt": 1, "label": "Platinum (1pt)", "short": "Platinum", "color": discord.Color.gold()},
+    "PLATINUM": {"pt": 1, "label": "Platinum (1pt)", "short": "Plat", "color": discord.Color.gold()},
     "COACH": {"pt": 0, "label": "コーチ (0pt)", "short": "Coach", "color": discord.Color.dark_grey()},
 }
 
+# ---------- Database ----------
+def db():
+    return sqlite3.connect(DB_PATH)
+
 def init_db():
-    conn = sqlite3.connect("lol_server.db")
-    c = conn.cursor()
-    c.execute("CREATE TABLE IF NOT EXISTS players (discord_id INTEGER PRIMARY KEY, riot_id TEXT, puuid TEXT, peak_rank TEXT, points INTEGER, main_role TEXT, champions TEXT, status TEXT DEFAULT 'FA')")
-    c.execute("CREATE TABLE IF NOT EXISTS teams (team_name TEXT PRIMARY KEY, leader_id INTEGER, member_ids TEXT, coach_id INTEGER, total_points INTEGER)")
-    c.execute("CREATE TABLE IF NOT EXISTS activity_log (discord_id INTEGER, last_active TIMESTAMP)")
-    c.execute("CREATE TABLE IF NOT EXISTS recruit_threads (message_id INTEGER PRIMARY KEY, thread_id INTEGER)")
-    conn.commit()
-    conn.close()
+    with db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS players (
+                discord_id INTEGER PRIMARY KEY,
+                riot_id TEXT NOT NULL,
+                puuid TEXT,
+                peak_rank TEXT NOT NULL,
+                points INTEGER NOT NULL,
+                main_role TEXT NOT NULL,
+                champions TEXT,
+                status TEXT DEFAULT 'FA'
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS recruit_threads (
+                message_id INTEGER PRIMARY KEY,
+                thread_id INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS recruitment_members (
+                message_id INTEGER NOT NULL,
+                discord_id INTEGER NOT NULL,
+                PRIMARY KEY(message_id, discord_id)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS teams (
+                team_name TEXT PRIMARY KEY,
+                leader_id INTEGER,
+                member_ids TEXT,
+                coach_id INTEGER,
+                total_points INTEGER
+            )
+        """)
 
-def load_players_from_sheet():
-    players = {}
-    try:
-        req = urllib.request.Request(SPREADSHEET_CSV_URL, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            lines = [line.decode('utf-8') for line in response.readlines()]
-            reader = csv.DictReader(lines)
-            for row in reader:
-                name = row.get("SN") or row.get("名前")
-                if not name:
-                    continue
-                try:
-                    point = int(row.get("ポイント", 0))
-                except ValueError:
-                    point = 0
-                roles_str = row.get("希望ロール", "")
-                roles = [r.strip().upper() for r in roles_str.split(",")] if roles_str else []
-                rank = row.get("ランク", "")
-                players[str(name).strip()] = {"point": point, "roles": roles, "rank": rank}
-    except Exception as e:
-        print(f"⚠️ スプレッドシート読み込みエラー: {e}")
-    return players
+def get_player(discord_id):
+    with db() as conn:
+        return conn.execute(
+            "SELECT riot_id, puuid, peak_rank, points, main_role, champions, status FROM players WHERE discord_id=?",
+            (discord_id,)
+        ).fetchone()
 
+def rank_options():
+    return [discord.SelectOption(label=v["label"], value=k) for k, v in RANK_DATA.items()]
+
+# ---------- Flask keep-alive ----------
+web_app = Flask("nexus-league-bot")
+
+@web_app.get("/")
+def home():
+    return "Nexus League Bot is running!"
+
+def start_web():
+    # Disable the reloader so it does not start a second process/thread.
+    web_app.run(host="0.0.0.0", port=WEB_PORT, use_reloader=False)
+
+# ---------- Bot ----------
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.reactions = True
+
+class NexusBot(commands.Bot):
+    async def setup_hook(self):
+        # Persistent views: their buttons continue working after a restart.
+        self.add_view(MainView())
+        self.add_view(CustomPanelTriggerView())
+        try:
+            synced = await self.tree.sync()
+            print(f"Slash commands synced: {len(synced)}")
+        except Exception as exc:
+            print(f"Slash command sync failed: {exc}")
+
+bot = NexusBot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+# ---------- Player registration ----------
 class PlayerModal(discord.ui.Modal, title="Riot ID連携・プレイヤー登録"):
-    riot = discord.ui.TextInput(label="Riot ID (例: Name#JP1)", placeholder="名前#タグ", required=True)
-    role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JG / MID / ADC / SUP / コーチ", required=True)
-    champ = discord.ui.TextInput(label="自己PR・得意チャンプ", style=discord.TextStyle.paragraph, required=False)
+    riot = discord.ui.TextInput(label="Riot ID (例: Name#JP1)", placeholder="名前#タグ", required=True, max_length=100)
+    role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JGL / MID / ADC / SUP / コーチ", required=True, max_length=20)
+    champ = discord.ui.TextInput(label="自己PR・得意チャンプ", style=discord.TextStyle.paragraph, required=False, max_length=800)
 
-    def __init__(self, rank):
+    def __init__(self, rank_key):
         super().__init__()
-        self.rank = rank
+        self.rank_key = rank_key
 
     async def on_submit(self, interaction: discord.Interaction):
-        if "#" not in self.riot.value:
-            await interaction.response.send_message("❌ `#` を含めた形式で入力してください。", ephemeral=True)
+        riot_id = self.riot.value.strip()
+        if "#" not in riot_id or not all(riot_id.split("#", 1)):
+            await interaction.response.send_message("❌ Riot IDは `名前#タグ` の形式で入力してください。", ephemeral=True)
             return
-        g_name, _ = self.riot.value.split("#", 1)
-        info = RANK_DATA[self.rank]
-        conn = sqlite3.connect("lol_server.db")
-        c = conn.cursor()
-        c.execute("INSERT OR REPLACE INTO players VALUES (?, ?, ?, ?, ?, ?, ?, 'FA')",
-                  (interaction.user.id, self.riot.value, "PUUID", self.rank, info["pt"], self.role.value, self.champ.value))
-        conn.commit()
-        conn.close()
-        nick = f"{g_name} / {self.role.value} / {info['short']}"[:32]
-        try:
-            await interaction.user.edit(nick=nick)
-        except:
-            pass
-        await interaction.response.send_message(f"✅ 登録完了！表示名を `{nick}` に変更しました。", ephemeral=True)
-        target_ch = None
-        for ch in interaction.guild.text_channels:
-            if "入力check" in ch.name.lower() or "入力チェック" in ch.name.lower() or "1566055273146093599" in str(ch.id):
-                target_ch = ch
-                break
-        if target_ch:
-            opgg = f"https://www.op.gg/summoners/jp/{urllib.parse.quote(self.riot.value.replace('#', '-'))}"
-            emb = discord.Embed(title="📝 新規プレイヤー登録・チェック用", description=f"{interaction.user.mention} が登録しました。", color=discord.Color.gold())
-            emb.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-            emb.add_field(name="🎮 Riot ID", value=f"[{self.riot.value}]({opgg})", inline=True)
-            emb.add_field(name="🏆 ランク", value=info["label"], inline=True)
-            emb.add_field(name="⚔️ ロール", value=self.role.value, inline=True)
-            emb.add_field(name="💬 自己PR", value=self.champ.value or "なし", inline=False)
-            await target_ch.send(embed=emb)
+
+        role = self.role.value.strip().upper()
+        if role not in ROLES:
+            await interaction.response.send_message(
+                "❌ ロールは TOP / JGL / MID / ADC / SUP / コーチ のいずれかで入力してください。",
+                ephemeral=True
+            )
+            return
+
+        info = RANK_DATA[self.rank_key]
+        with db() as conn:
+            conn.execute("""
+                INSERT INTO players(discord_id, riot_id, puuid, peak_rank, points, main_role, champions, status)
+                VALUES (?, ?, NULL, ?, ?, ?, ?, 'FA')
+                ON CONFLICT(discord_id) DO UPDATE SET
+                    riot_id=excluded.riot_id, peak_rank=excluded.peak_rank,
+                    points=excluded.points, main_role=excluded.main_role,
+                    champions=excluded.champions, status='FA'
+            """, (interaction.user.id, riot_id, self.rank_key, info["pt"], role, self.champ.value.strip()))
+
+        game_name = riot_id.split("#", 1)[0]
+        nickname = f"{game_name} / {role} / {info['short']}"[:32]
+        nickname_changed = False
+        if isinstance(interaction.user, discord.Member):
+            try:
+                await interaction.user.edit(nick=nickname, reason="Nexus League player registration")
+                nickname_changed = True
+            except discord.Forbidden:
+                pass
+            except discord.HTTPException:
+                pass
+
+        await interaction.response.send_message(
+            f"✅ 登録しました！\nRiot ID: `{riot_id}`\nランク: **{info['label']}** / ロール: **{role}**"
+            + (f"\nDiscord表示名: `{nickname}`" if nickname_changed else "\n※ Botの権限上、表示名は変更できませんでした。"),
+            ephemeral=True
+        )
+
+        # Optional registration-check channel (name contains 入力チェック or input-check).
+        if interaction.guild:
+            target = discord.utils.find(
+                lambda ch: isinstance(ch, discord.TextChannel)
+                and ("入力チェック" in ch.name or "input-check" in ch.name.lower()),
+                interaction.guild.text_channels
+            )
+            if target:
+                opgg = f"https://www.op.gg/summoners/jp/{quote(riot_id.replace('#', '-'), safe='')}"
+                embed = discord.Embed(title="📝 新規プレイヤー登録・確認", color=info["color"])
+                embed.description = f"{interaction.user.mention} が登録しました。"
+                embed.add_field(name="🎮 Riot ID", value=f"[{riot_id}]({opgg})", inline=True)
+                embed.add_field(name="🏆 ランク", value=info["label"], inline=True)
+                embed.add_field(name="⚔️ ロール", value=role, inline=True)
+                embed.add_field(name="💬 自己PR", value=self.champ.value.strip() or "なし", inline=False)
+                try:
+                    await target.send(embed=embed)
+                except discord.HTTPException:
+                    pass
 
 class PlayerSelect(discord.ui.Select):
     def __init__(self):
-        opts = [discord.SelectOption(label=v["label"], value=k) for k, v in RANK_DATA.items()]
-        super().__init__(placeholder="最高ランクまたはコーチを選択してください", options=opts)
+        super().__init__(placeholder="最高ランクまたはコーチを選択", options=rank_options(), min_values=1, max_values=1)
 
-    async def callback(self, interaction):
+    async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(PlayerModal(self.values[0]))
 
 class PlayerSelView(discord.ui.View):
@@ -133,84 +207,229 @@ class MainView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🎮 Riot IDを連携・登録する", style=discord.ButtonStyle.success, custom_id="reg_btn")
-    async def reg(self, interaction, button):
-        await interaction.response.send_message("👇 最高ランク（またはコーチ）を選択：", view=PlayerSelView(), ephemeral=True)
+    @discord.ui.button(label="🎮 Riot IDを連携・登録する", style=discord.ButtonStyle.success, custom_id="nexus:register")
+    async def register(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "👇 最高ランク（またはコーチ）を選択してください：",
+            view=PlayerSelView(), ephemeral=True
+        )
 
-class FaModal(discord.ui.Modal, title="FA選手カード作成（手動）"):
+# ---------- FA card ----------
+class FaModal(discord.ui.Modal, title="FA選手カード作成"):
     riot = discord.ui.TextInput(label="Riot ID", placeholder="名前#タグ", required=True)
-    role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JG / MID / ADC / SUP", required=True)
-    champ = discord.ui.TextInput(label="自己PR", style=discord.TextStyle.paragraph, required=False)
-
-    def __init__(self, rank_key):
-        super().__init__()
-        self.rank_key = rank_key
+    role = discord.ui.TextInput(label="メインロール", placeholder="TOP / JGL / MID / ADC / SUP / コーチ", required=True)
+    rank = discord.ui.TextInput(label="ランク", placeholder="例: Diamond I / Master", required=True)
+    intro = discord.ui.TextInput(label="自己PR・得意チャンプ", style=discord.TextStyle.paragraph, required=False)
 
     async def on_submit(self, interaction: discord.Interaction):
-        info = RANK_DATA[self.rank_key]
-        opgg = f"https://www.op.gg/summoners/jp/{urllib.parse.quote(self.riot.value.replace('#', '-'))}"
-        emb = discord.Embed(title="📝 新規プレイヤー登録", description=f"{interaction.user.mention} が登録しました。", color=info["color"])
-        emb.set_author(name=f"{self.riot.value.split('#')[0]} / {self.role.value} / {info['short']}", icon_url=interaction.user.display_avatar.url)
-        emb.add_field(name="🎮 Riot ID", value=f"[{self.riot.value}]({opgg})", inline=True)
-        emb.add_field(name="🏆 ランク", value=info["label"], inline=True)
-        emb.add_field(name="⚔️ ロール", value=self.role.value, inline=True)
-        await interaction.channel.send(embed=emb)
-        await interaction.response.send_message("✅ FAカードを投稿しました！", ephemeral=True)
+        riot_id = self.riot.value.strip()
+        if "#" not in riot_id:
+            await interaction.response.send_message("❌ Riot IDは `名前#タグ` の形式で入力してください。", ephemeral=True)
+            return
+        opgg = f"https://www.op.gg/summoners/jp/{quote(riot_id.replace('#', '-'), safe='')}"
+        embed = discord.Embed(title="📝 FA選手募集", color=discord.Color.blurple())
+        embed.set_author(name=f"{riot_id.split('#')[0]} / {self.role.value} / {self.rank.value}",
+                         icon_url=interaction.user.display_avatar.url)
+        embed.add_field(name="🎮 Riot ID", value=f"[{riot_id}]({opgg})", inline=True)
+        embed.add_field(name="🏆 ランク", value=self.rank.value, inline=True)
+        embed.add_field(name="⚔️ ロール", value=self.role.value, inline=True)
+        embed.add_field(name="💬 自己PR", value=self.intro.value.strip() or "未記入", inline=False)
+        await interaction.response.send_message("✅ FAカードを投稿しました。", ephemeral=True)
+        await interaction.channel.send(embed=embed)
 
 class FaSelect(discord.ui.Select):
     def __init__(self):
-        opts = [discord.SelectOption(label=v["label"], value=k) for k, v in RANK_DATA.items()]
-        super().__init__(placeholder="選手のランクを選択してください", options=opts)
+        super().__init__(placeholder="登録ランクを選択（FAカード用）", options=rank_options())
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(FaModal(self.values[0]))
+        # Keep rank selection in the modal's rank field as a readable label.
+        await interaction.response.send_modal(FaModal())
 
-class FaSelectView(discord.ui.View):
+class FaPanelView(discord.ui.View):
     def __init__(self):
-        super().__init__(timeout=180)
-        self.add_item(FaSelect())
+        super().__init__(timeout=None)
 
+    @discord.ui.button(label="📝 FA選手カードを作成", style=discord.ButtonStyle.primary, custom_id="nexus:fa")
+    async def open_fa(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(FaModal())
+
+# ---------- Custom recruitment ----------
 class CustomCreateModal(discord.ui.Modal, title="カスタム・イベント募集設定"):
-    title_input = discord.ui.TextInput(label="募集タイトル", placeholder="ワイワイカスタム / ノーマル募集", required=True)
-    date_input = discord.ui.TextInput(label="日程", placeholder="11月4日", required=True)
-    time_input = discord.ui.TextInput(label="時間", placeholder="21:00〜", required=True)
+    title_input = discord.ui.TextInput(label="募集タイトル", placeholder="ワイワイカスタム / ノーマル募集", required=True, max_length=80)
+    date_input = discord.ui.TextInput(label="日程", placeholder="11月4日", required=True, max_length=50)
+    time_input = discord.ui.TextInput(label="時間", placeholder="21:00〜", required=True, max_length=50)
+    note_input = discord.ui.TextInput(label="補足（任意）", required=False, style=discord.TextStyle.paragraph, max_length=500)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            await interaction.response.send_message("サーバーのテキストチャンネルで実行してください。", ephemeral=True)
+            return
+
         embed = discord.Embed(
-            title=f"🎮 {self.title_input.value}", 
-            description=f"**📅 日程:** {self.date_input.value}\n**⏰ 時間:** {self.time_input.value}\n\n👇 参加される方は、下の **:sannka:** スタンプを押してください！自動で専用スレッドが作成され、参加メンバーに追加されます。", 
+            title=f"🎮 {self.title_input.value}",
+            description=(
+                f"**📅 日程:** {self.date_input.value}\n"
+                f"**⏰ 時間:** {self.time_input.value}\n"
+                f"**📝 補足:** {self.note_input.value.strip() or 'なし'}\n\n"
+                "👇 参加する方は下の **✅** を押してください。参加者は専用スレッドへ招待されます。"
+            ),
             color=discord.Color.blue()
         )
-        
+        await interaction.response.send_message("募集を作成しています…", ephemeral=True)
         msg = await interaction.channel.send(content="@everyone 新しい募集が開始されました！", embed=embed)
-        
-        try:
-            sannka_emoji = discord.utils.get(interaction.guild.emojis, name="sannka")
-            if sannka_emoji:
-                await msg.add_reaction(sannka_emoji)
-            else:
-                await msg.add_reaction("✅")
-        except:
-            pass
+        await msg.add_reaction("✅")
 
         try:
-            thread = await msg.create_thread(name=f"🎮┃{self.title_input.value} ({self.date_input.value})", auto_archive_duration=1440)
-            await thread.send(f"🧵 専用スレッドを作成しました！このスレッド内でわちゃわちゃ作戦会議や通話のやり取りをしてください✨")
-            
-            conn = sqlite3.connect("lol_server.db")
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO recruit_threads VALUES (?, ?)", (msg.id, thread.id))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            print(f"スレッド作成エラー: {e}")
-
-        await interaction.response.send_message("✅ 募集パネルと専用スレッドを作成しました！", ephemeral=True)
+            thread = await msg.create_thread(
+                name=f"🎮┃{self.title_input.value} ({self.date_input.value})"[:100],
+                auto_archive_duration=1440
+            )
+            await thread.send("🧵 専用スレッドです。作戦会議や通話の相談に使ってください！")
+            with db() as conn:
+                conn.execute("INSERT OR REPLACE INTO recruit_threads(message_id, thread_id) VALUES (?, ?)",
+                             (msg.id, thread.id))
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"Thread creation failed: {exc}")
 
 class CustomPanelTriggerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="📅 新規募集パネルを立てる", style=discord.ButtonStyle.blurple, custom_id="trigger_custom_modal")
+    @discord.ui.button(label="📅 新規募集パネルを立てる", style=discord.ButtonStyle.blurple, custom_id="nexus:custom_panel")
     async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response
+        await interaction.response.send_modal(CustomCreateModal())
+
+# ---------- Reactions: add users to recruitment thread ----------
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if bot.user and payload.user_id == bot.user.id:
+        return
+    if str(payload.emoji) not in ("✅", "☑️"):
+        return
+    with db() as conn:
+        row = conn.execute("SELECT thread_id FROM recruit_threads WHERE message_id=?",
+                           (payload.message_id,)).fetchone()
+    if not row:
+        return
+
+    guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
+    if not guild:
+        return
+    thread = guild.get_thread(row[0])
+    if thread is None:
+        try:
+            thread = await guild.fetch_channel(row[0])
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return
+    try:
+        member = guild.get_member(payload.user_id) or await guild.fetch_member(payload.user_id)
+        await thread.add_user(member)
+        with db() as conn:
+            conn.execute("INSERT OR IGNORE INTO recruitment_members(message_id, discord_id) VALUES (?, ?)",
+                         (payload.message_id, payload.user_id))
+        try:
+            await thread.send(f"✅ {member.mention} が参加しました。")
+        except discord.HTTPException:
+            pass
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"Could not add reaction user to thread: {exc}")
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    if str(payload.emoji) not in ("✅", "☑️"):
+        return
+    with db() as conn:
+        row = conn.execute("SELECT thread_id FROM recruit_threads WHERE message_id=?",
+                           (payload.message_id,)).fetchone()
+        conn.execute("DELETE FROM recruitment_members WHERE message_id=? AND discord_id=?",
+                    (payload.message_id, payload.user_id))
+    if not row or not payload.guild_id:
+        return
+    guild = bot.get_guild(payload.guild_id)
+    if not guild:
+        return
+    thread = guild.get_thread(row[0])
+    if thread:
+        try:
+            member = guild.get_member(payload.user_id)
+            if member:
+                await thread.remove_user(member)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+# ---------- Slash commands ----------
+@bot.tree.command(name="setup", description="プレイヤー登録パネルを設置（管理者）")
+@app_commands.checks.has_permissions(administrator=True)
+async def setup_panel(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🎮 Nexus League - プレイヤー登録",
+        description="ボタンからRiot ID・最高ランク・メインロール・自己PRを登録してください。",
+        color=discord.Color.green()
+    )
+    await interaction.channel.send(embed=embed, view=MainView())
+    await interaction.response.send_message("✅ 登録パネルを設置しました。", ephemeral=True)
+
+@bot.tree.command(name="fa_panel", description="FA選手カード作成パネルを設置（管理者）")
+@app_commands.checks.has_permissions(administrator=True)
+async def fa_panel(interaction: discord.Interaction):
+    embed = discord.Embed(title="📝 FA選手カード作成", description="ボタンからFAカードを作成できます。", color=discord.Color.blurple())
+    await interaction.channel.send(embed=embed, view=FaPanelView())
+    await interaction.response.send_message("✅ FAパネルを設置しました。", ephemeral=True)
+
+@bot.tree.command(name="custom_panel", description="カスタム募集パネルを設置（管理者）")
+@app_commands.checks.has_permissions(administrator=True)
+async def custom_panel(interaction: discord.Interaction):
+    embed = discord.Embed(title="📅 カスタム・イベント募集", description="ボタンから新しい募集を作成できます。", color=discord.Color.blue())
+    await interaction.channel.send(embed=embed, view=CustomPanelTriggerView())
+    await interaction.response.send_message("✅ カスタム募集パネルを設置しました。", ephemeral=True)
+
+@bot.tree.command(name="profile", description="自分の登録情報を確認")
+async def profile(interaction: discord.Interaction):
+    row = get_player(interaction.user.id)
+    if not row:
+        await interaction.response.send_message("まだ登録されていません。`/setup` のパネルから登録してください。", ephemeral=True)
+        return
+    riot_id, puuid, rank_key, points, role, champions, status = row
+    info = RANK_DATA.get(rank_key, {"label": rank_key, "color": discord.Color.greyple()})
+    embed = discord.Embed(title="👤 登録プロフィール", color=info["color"])
+    embed.add_field(name="Riot ID", value=riot_id, inline=True)
+    embed.add_field(name="ランク", value=info["label"], inline=True)
+    embed.add_field(name="ポイント", value=str(points), inline=True)
+    embed.add_field(name="メインロール", value=role, inline=True)
+    embed.add_field(name="自己PR", value=champions or "なし", inline=False)
+    embed.add_field(name="状態", value=status, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="players", description="登録済みプレイヤー一覧")
+async def players(interaction: discord.Interaction):
+    with db() as conn:
+        rows = conn.execute("SELECT discord_id, riot_id, peak_rank, points, main_role FROM players ORDER BY points DESC, riot_id").fetchall()
+    if not rows:
+        await interaction.response.send_message("登録プレイヤーはいません。", ephemeral=True)
+        return
+    lines = []
+    for discord_id, riot_id, rank_key, points, role in rows[:25]:
+        rank_label = RANK_DATA.get(rank_key, {}).get("label", rank_key)
+        lines.append(f"<@{discord_id}> — **{riot_id}** / {role} / {rank_label} ({points}pt)")
+    embed = discord.Embed(title=f"👥 登録プレイヤー一覧 ({len(rows)}人)", description="\\n".join(lines), color=discord.Color.blurple())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        message = "❌ このコマンドはサーバー管理者のみ実行できます。"
+    else:
+        print(f"App command error: {error}")
+        message = "❌ コマンド実行中にエラーが発生しました。Botログを確認してください。"
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+# ---------- Entrypoint ----------
+if __name__ == "__main__":
+    init_db()
+    threading.Thread(target=start_web, daemon=True).start()
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN が設定されていません。環境変数にBot Tokenを設定してください。")
+    bot.run(TOKEN)
