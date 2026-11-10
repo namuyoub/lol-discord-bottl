@@ -25,6 +25,7 @@ RECRUIT_CHANNELS = {
 }
 CUSTOM_CHANNEL_ID = 1567318455391101030
 CUSTOM_ROLE_NAME = "@カスタム"
+REGISTRATION_INFO_CHANNEL_ID = 1566055273146093599
 TEAM_POINT_LIMIT = 16
 MAX_DIAMOND = 2
 MAX_MASTER = 1
@@ -64,6 +65,13 @@ def init_db():
             CREATE TABLE IF NOT EXISTS recruit_threads (
                 message_id INTEGER PRIMARY KEY,
                 thread_id INTEGER NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS join_button_threads (
+                button_message_id INTEGER PRIMARY KEY,
+                thread_id INTEGER NOT NULL,
+                source_message_id INTEGER NOT NULL
             )
         """)
         conn.execute("""
@@ -115,6 +123,7 @@ class NexusBot(commands.Bot):
         # Persistent views: their buttons continue working after a restart.
         self.add_view(MainView())
         self.add_view(CustomPanelTriggerView())
+        self.add_view(JoinThreadButtonView())
         for kind in RECRUIT_CHANNELS:
             self.add_view(RecruitmentView(kind))
         try:
@@ -182,13 +191,14 @@ class PlayerModal(discord.ui.Modal, title="Riot ID連携・プレイヤー登録
             ephemeral=True
         )
 
-        # Optional registration-check channel (name contains 入力チェック or input-check).
+        # Registration details are sent to the designated channel by ID.
         if interaction.guild:
-            target = discord.utils.find(
-                lambda ch: isinstance(ch, discord.TextChannel)
-                and ("入力チェック" in ch.name or "input-check" in ch.name.lower()),
-                interaction.guild.text_channels
-            )
+            target = interaction.guild.get_channel(REGISTRATION_INFO_CHANNEL_ID)
+            if target is None:
+                try:
+                    target = await interaction.guild.fetch_channel(REGISTRATION_INFO_CHANNEL_ID)
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    target = None
             if target:
                 opgg = f"https://www.op.gg/summoners/jp/{quote(riot_id.replace('#', '-'), safe='')}"
                 embed = discord.Embed(title="📝 新規プレイヤー登録・確認", color=info["color"])
@@ -263,6 +273,80 @@ class FaPanelView(discord.ui.View):
     @discord.ui.button(label="📝 FA選手カードを作成", style=discord.ButtonStyle.primary, custom_id="nexus:fa")
     async def open_fa(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(FaModal())
+
+# ---------- Auto recruitment post -> thread + join button ----------
+class JoinThreadButtonView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🙋 参加する", style=discord.ButtonStyle.success, custom_id="nexus:join_auto_thread")
+    async def join_thread(self, interaction: discord.Interaction, button: discord.ui.Button):
+        with db() as conn:
+            row = conn.execute(
+                "SELECT thread_id FROM join_button_threads WHERE button_message_id=?",
+                (interaction.message.id,)
+            ).fetchone()
+        if not row:
+            await interaction.response.send_message("募集スレッド情報が見つかりません。募集主に再投稿をお願いしてください。", ephemeral=True)
+            return
+        thread_id = row[0]
+        thread = interaction.guild.get_thread(thread_id) if interaction.guild else None
+        if thread is None and interaction.guild:
+            try:
+                thread = await interaction.guild.fetch_channel(thread_id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                thread = None
+        if thread is None:
+            await interaction.response.send_message("スレッドが見つかりません。募集主に再投稿をお願いしてください。", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            await thread.add_user(interaction.user)
+            with db() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO recruitment_members(message_id, discord_id) VALUES (?, ?)",
+                    (interaction.message.id, interaction.user.id)
+                )
+            await thread.send(f"🙋 {interaction.user.mention} さんが参加します！")
+            await interaction.followup.send(f"参加しました！ {thread.mention}", ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"Join thread error: {exc}")
+            await interaction.followup.send(f"スレッドへの参加に失敗しました。権限を確認してください。\n{thread.mention}", ephemeral=True)
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Users can simply post "ノマ@4" / "ランク@2" in one of the three recruitment channels.
+    if message.author.bot or message.channel.id not in RECRUIT_CHANNELS.values():
+        await bot.process_commands(message)
+        return
+    kind = next((name for name, channel_id in RECRUIT_CHANNELS.items() if channel_id == message.channel.id), "募集")
+    try:
+        thread = await message.create_thread(
+            name=f"🎮┃{message.author.display_name}┃{message.content[:45]}"[:100],
+            auto_archive_duration=1440
+        )
+        await thread.send(f"📣 {message.author.mention} さんが募集を開始しました！\n**募集内容：** {message.content}")
+        button_message = await message.reply(
+            f"募集主：{message.author.mention} ｜ **{kind}**\n参加する方は下のボタンを押してください。",
+            view=JoinThreadButtonView(),
+            mention_author=False
+        )
+        with db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO recruit_threads(message_id, thread_id) VALUES (?, ?)",
+                (message.id, thread.id)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO join_button_threads(button_message_id, thread_id, source_message_id) VALUES (?, ?, ?)",
+                (button_message.id, thread.id, message.id)
+            )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        print(f"Auto recruitment thread creation failed for message {message.id}: {exc}")
+        try:
+            await message.reply("⚠️ スレッドを作成できませんでした。Botの権限（スレッド作成・メッセージ送信）を確認してください。", mention_author=False)
+        except discord.HTTPException:
+            pass
+    await bot.process_commands(message)
 
 # ---------- Fixed-channel recruitment buttons ----------
 class RecruitmentView(discord.ui.View):
