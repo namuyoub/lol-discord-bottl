@@ -16,6 +16,15 @@ from flask import Flask
 TOKEN = os.getenv("DISCORD_TOKEN")
 DB_PATH = os.getenv("DB_PATH", "lol_server.db")
 WEB_PORT = int(os.getenv("PORT", "8080"))
+
+# Recruitment channels (Discord channel IDs)
+RECRUIT_CHANNELS = {
+    "ノーマル・ARAM募集": 1569643108147265709,
+    "デュオランク募集": 1569643437035229326,
+    "フレックス募集": 1569643504999604285,
+}
+CUSTOM_CHANNEL_ID = 1567318455391101030
+CUSTOM_ROLE_NAME = "@カスタム"
 TEAM_POINT_LIMIT = 16
 MAX_DIAMOND = 2
 MAX_MASTER = 1
