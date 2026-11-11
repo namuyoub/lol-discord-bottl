@@ -1862,6 +1862,33 @@ async def register_command(
 
 
 # =========================================================
+# FAカード直接起動コマンド（パネル不要・運営限定）
+# =========================================================
+
+@app_commands.command(
+    name="fa_card",
+    description="運営専用：FAカードの入力画面を開きます。",
+)
+async def fa_card_command(
+    interaction: discord.Interaction,
+):
+
+    if not interaction.guild:
+        return await safe_ephemeral(
+            interaction,
+            "サーバー内で実行してください。",
+        )
+
+    if not isinstance(interaction.user, discord.Member) or not is_operations_member(interaction.user):
+        return await safe_ephemeral(
+            interaction,
+            "FAカードの登録は運営メンバーのみ利用できます。",
+        )
+
+    await interaction.response.send_modal(FaModal())
+
+
+# =========================================================
 # Part 4 / 6
 # FAカード・ロールパネル・チーム受付
 # =========================================================
@@ -3431,10 +3458,7 @@ intents.members = True
 intents.messages = True
 intents.message_content = True
 
-bot = commands.Bot(
-    command_prefix="!",
-    intents=intents,
-)
+# BotインスタンスはNexusBotの1つだけを使用します。
 
 
 # =========================================================
@@ -3486,6 +3510,10 @@ class NexusBot(commands.Bot):
         )
 
         self.tree.add_command(
+            fa_card_command
+        )
+
+        self.tree.add_command(
             setup_role_panel_command
         )
 
@@ -3512,6 +3540,10 @@ class NexusBot(commands.Bot):
         guild = discord.Object(
             id=TARGET_GUILD_ID
         )
+
+        # グローバル登録したコマンドを対象サーバー用にコピーして同期する。
+        # guild syncだけではglobal commandが同期対象に含まれないため。
+        self.tree.copy_global_to(guild=guild)
 
         try:
 
