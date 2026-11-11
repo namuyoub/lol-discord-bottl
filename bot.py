@@ -2747,28 +2747,8 @@ class SelectableRoleButton(discord.ui.Button):
             )
             return
 
-        # 選択対象のロールだけを取得
-        current_roles = [
-            role
-            for role in interaction.user.roles
-            if role.id in SELECTABLE_ROLE_IDS
-        ]
-
         try:
-            # 他の選択対象ロールを外す
-            remove_roles = [
-                role
-                for role in current_roles
-                if role.id != self.role_id
-            ]
-
-            if remove_roles:
-                await interaction.user.remove_roles(
-                    *remove_roles,
-                    reason="Nexus BOT ロール選択",
-                )
-
-            # まだ持っていない場合だけ付与
+            # 選択したロールだけを追加し、他の選択済みロールは残す
             if selected_role not in interaction.user.roles:
                 await interaction.user.add_roles(
                     selected_role,
@@ -2791,7 +2771,7 @@ class SelectableRoleButton(discord.ui.Button):
             return
 
         await interaction.response.send_message(
-            f"ロールを **{selected_role.name}** に設定しました！",
+            f"**{selected_role.name}** を付与しました！",
             ephemeral=True,
         )
 
@@ -2931,8 +2911,8 @@ async def setup_role_panel(
             "💎 **ランク**\n"
             "🛠️ **カスタム**\n"
             "🏆 **大会**\n\n"
-            "ロールは1つずつ選択できます。\n"
-            "別のロールを選択すると、以前の選択対象ロールは外れます。\n\n"
+            "必要なロールを何個でも選択できます。\n"
+            "選択したロールは追加され、他のロールは外れません。\n\n"
             "🗑️ **全てのロールを外す**\n"
             "選択対象のロールを全て解除できます。"
         ),
