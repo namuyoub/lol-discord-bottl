@@ -196,6 +196,33 @@ def can_manage_recruit(
 ) -> bool:
     return user.id in (recruiter_id, OWNER_ID)
 
+_HIDDEN_ID_PREFIX = "\u2063"
+_HIDDEN_ID_ZERO = "\u200b"
+_HIDDEN_ID_ONE = "\u200c"
+
+
+def encode_hidden_user_id(user_id: int) -> str:
+    return _HIDDEN_ID_PREFIX + "".join(
+        _HIDDEN_ID_ONE if bit == "1" else _HIDDEN_ID_ZERO
+        for bit in format(user_id, "064b")
+    )
+
+
+def decode_hidden_user_id(footer_text: str) -> Optional[int]:
+    if footer_text.startswith(_HIDDEN_ID_PREFIX):
+        encoded = footer_text[len(_HIDDEN_ID_PREFIX):]
+        bits = "".join(
+            "0" if char == _HIDDEN_ID_ZERO else "1"
+            for char in encoded[:64]
+            if char in (_HIDDEN_ID_ZERO, _HIDDEN_ID_ONE)
+        )
+        if len(bits) == 64:
+            return int(bits, 2)
+    match = re.search(r"Creator ID: (\\d+)", footer_text)
+    return int(match.group(1)) if match else None
+
+
+
 
 def can_manage_participant(
     user: discord.abc.User,
@@ -265,6 +292,7 @@ class NexusBot(commands.Bot):
 
         guild = discord.Object(id=GUILD_ID)
 
+        await self.tree.sync()
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
 
@@ -303,10 +331,11 @@ PLAYER_RECORDS = {}
 
 class RegistrationSelectView(discord.ui.View):
 
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, is_fa: bool = False):
         super().__init__(timeout=600)
 
         self.user_id = user_id
+        self.is_fa = is_fa
         self.selected_rank = None
         self.selected_roles = []
 
@@ -350,10 +379,7 @@ class RegistrationSelectView(discord.ui.View):
             return
 
         await interaction.response.send_modal(
-            RegistrationModal(
-                self.selected_rank,
-                self.selected_roles,
-            )
+            RegistrationModal(self.selected_rank, self.selected_roles, is_fa=self.is_fa)
         )
 
 
@@ -449,15 +475,11 @@ class RegistrationRoleSelect(discord.ui.Select):
 
 class RegistrationModal(discord.ui.Modal):
 
-    def __init__(self, rank: str, roles: list):
-
-        super().__init__(
-            title="選手登録",
-            timeout=600,
-        )
-
+    def __init__(self, rank: str, roles: list, is_fa: bool = False):
+        super().__init__(title="FA Card作成" if is_fa else "選手登録", timeout=600)
         self.rank = rank
         self.roles = roles
+        self.is_fa = is_fa
 
         self.riot_id = discord.ui.TextInput(
             label="Riot ID（名前#TAG）",
@@ -500,6 +522,38 @@ class RegistrationModal(discord.ui.Modal):
 
         game_name = riot_id.rsplit("#", 1)[0].strip()
         roles_text = "・".join(self.roles)
+
+        if self.is_fa:
+            opgg_url = make_opgg_url(riot_id)
+            embed = create_rank_embed(
+                "Nexus League | FREE AGENT",
+                f"## {game_name}\n**{self.rank}**\n希望ロール：**{roles_text}**",
+                self.rank,
+            )
+            embed.add_field(name="RANK POINT", value=f"**{RANK_POINTS[self.rank]} pt**", inline=True)
+            embed.add_field(name="RIOT ID", value=f"`{riot_id}`", inline=True)
+            embed.add_field(name="SELF PR", value=str(self.self_pr.value).strip()[:1000] or "未記入", inline=False)
+            embed.add_field(name="OP.GG", value=f"[プロフィールを確認する]({opgg_url})", inline=False)
+            embed.set_footer(text="Nexus League | Free Agent")
+            channel = guild.get_channel(FA_CARD_CHANNEL_ID)
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(FA_CARD_CHANNEL_ID)
+                except discord.HTTPException:
+                    channel = None
+            if channel is None:
+                await interaction.response.send_message("FA Cardチャンネルが見つかりません。", ephemeral=True)
+                return
+            try:
+                await channel.send(embed=embed, view=OPggLinkView(opgg_url))
+            except discord.Forbidden:
+                await interaction.response.send_message("FA Cardチャンネルへの送信権限がありません。", ephemeral=True)
+                return
+            except discord.HTTPException:
+                await interaction.response.send_message("FA Cardの発行に失敗しました。", ephemeral=True)
+                return
+            await interaction.response.send_message("FA Cardを発行しました！", ephemeral=True)
+            return
 
         # Discordのニックネームは最大32文字
         nickname = (
@@ -737,146 +791,20 @@ class OPggLinkView(discord.ui.View):
 
 @bot.tree.command(
     name="fa_card",
-    description="選手のFA Cardを発行します",
+    description="FA Cardを作成します",
 )
-@app_commands.describe(
-    riot_id="選手のRiot ID（名前#TAG）",
-    rank="選手のランク",
-    roles="希望ロール（例：MID・ADC）",
-    self_pr="自己PR（省略可能）",
-)
-@app_commands.choices(
-    rank=[
-        app_commands.Choice(name=rank, value=rank)
-        for rank in RANK_CHOICES
-    ]
-)
-async def fa_card(
-    interaction: discord.Interaction,
-    riot_id: str,
-    rank: app_commands.Choice[str],
-    roles: str,
-    self_pr: Optional[str] = None,
-):
-
-    # 運営者限定
+async def fa_card(interaction: discord.Interaction):
     if not is_owner(interaction.user):
-        await interaction.response.send_message(
-            "このコマンドは運営者専用です。",
-            ephemeral=True,
-        )
+        await interaction.response.send_message("このコマンドは運営者専用です。", ephemeral=True)
         return
-
-    # Riot ID確認
-    riot_id = normalize_riot_id(riot_id)
-    opgg_url = make_opgg_url(riot_id)
-
-    if opgg_url is None:
-        await interaction.response.send_message(
-            "Riot IDの形式が正しくありません。\n"
-            "「名前#TAG」で入力してください。",
-            ephemeral=True,
-        )
-        return
-
-    game_name = riot_id.rsplit("#", 1)[0].strip()
-    selected_rank = rank.value
-
-    if not roles.strip():
-        await interaction.response.send_message(
-            "希望ロールを入力してください。",
-            ephemeral=True,
-        )
-        return
-
-    # ランクポイント
-    points = RANK_POINTS[selected_rank]
-
-    # 公開Card
-    embed = create_rank_embed(
-        "Nexus League | FREE AGENT",
-        f"## {game_name}\n"
-        f"**{selected_rank}**\n"
-        f"希望ロール：**{roles.strip()}**",
-        selected_rank,
-    )
-
-    embed.add_field(
-        name="RANK POINT",
-        value=f"**{points} pt**",
-        inline=True,
-    )
-
-    embed.add_field(
-        name="RIOT ID",
-        value=f"`{riot_id}`",
-        inline=True,
-    )
-
-    if self_pr and self_pr.strip():
-        embed.add_field(
-            name="SELF PR",
-            value=self_pr.strip()[:1000],
-            inline=False,
-        )
-
-    embed.add_field(
-        name="OP.GG",
-        value=f"[プロフィールを確認する]({opgg_url})",
-        inline=False,
-    )
-
-    embed.set_footer(
-        text="Nexus League | Free Agent"
-    )
-
-    # FA Card投稿先
-    channel = interaction.guild.get_channel(
-        FA_CARD_CHANNEL_ID
-    ) if interaction.guild else None
-
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(
-                FA_CARD_CHANNEL_ID
-            )
-        except discord.HTTPException:
-            channel = None
-
-    if channel is None:
-        await interaction.response.send_message(
-            "FA Cardチャンネルが見つかりません。",
-            ephemeral=True,
-        )
-        return
-
-    try:
-        await channel.send(
-            embed=embed,
-            view=OPggLinkView(opgg_url),
-        )
-
-    except discord.Forbidden:
-        await interaction.response.send_message(
-            "FA Cardチャンネルへの送信権限がありません。",
-            ephemeral=True,
-        )
-        return
-
-    except discord.HTTPException:
-        await interaction.response.send_message(
-            "Cardの発行に失敗しました。",
-            ephemeral=True,
-        )
-        return
-
+    view = RegistrationSelectView(interaction.user.id, is_fa=True)
     await interaction.response.send_message(
-        "FA Cardを発行しました！",
+        "### FA Card作成\nランクと希望ロールを選択してください。\n希望ロールは複数選択できます。",
+        view=view,
         ephemeral=True,
     )
 
 
-# ============================================================
 # Part 3 終了
 # ============================================================
 
@@ -1241,19 +1169,7 @@ class TournamentView(discord.ui.View):
         embed = message.embeds[0].copy()
 
         footer_text = embed.footer.text or ""
-        creator_match = re.search(
-            r"Creator ID: (\d+)",
-            footer_text,
-        )
-
-        if creator_match is None:
-            await interaction.response.send_message(
-                "作成者情報を確認できません。",
-                ephemeral=True,
-            )
-            return
-
-        creator_id = int(creator_match.group(1))
+        creator_id = decode_hidden_user_id(footer_text)
 
         if not can_manage_recruit(
             interaction.user,
@@ -1385,9 +1301,7 @@ class TournamentCreateModal(discord.ui.Modal):
             [],
         )
 
-        embed.set_footer(
-            text=f"Creator ID: {interaction.user.id}"
-        )
+        embed.set_footer(text=encode_hidden_user_id(interaction.user.id))
 
         try:
             await channel.send(
@@ -2092,13 +2006,28 @@ class RecruitmentView(discord.ui.View):
         )
 
         await message.edit(embed=embed)
-
-        await interaction.response.send_message(
-            reply,
-            allowed_mentions=discord.AllowedMentions(
-                users=True
-            ),
-        )
+        thread = None
+        reference = message.reference
+        if reference and reference.message_id:
+            try:
+                parent_message = await message.channel.fetch_message(reference.message_id)
+                thread = parent_message.thread
+                if thread is not None and thread.archived:
+                    await thread.edit(archived=False)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                thread = None
+        if thread is not None:
+            try:
+                notice = ("参加してくれるよ！" if action == "join"
+                          else "途中から参加するよ〜" if action == "late"
+                          else "辞退したからね〜")
+                await thread.send(
+                    f"{interaction.user.mention} さんが{notice}",
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        await interaction.response.send_message("参加状況を更新しました。", ephemeral=True)
 
     async def join_callback(
         self,
@@ -2441,23 +2370,8 @@ class CustomRecruitmentView(discord.ui.View):
 
         if action == "join":
             joined.append(user_id_text)
-            reply = (
-                f"{interaction.user.mention} "
-                "さんが参加してくれるよ！"
-            )
-
         elif action == "late":
             late.append(user_id_text)
-            reply = (
-                f"{interaction.user.mention} "
-                "さんが途中から参加するよ〜"
-            )
-
-        else:
-            reply = (
-                f"{interaction.user.mention} "
-                "さんが辞退したからね〜"
-            )
 
         set_custom_members(
             embed,
@@ -2473,11 +2387,7 @@ class CustomRecruitmentView(discord.ui.View):
 
         await message.edit(embed=embed)
 
-        await interaction.response.send_message(
-            reply,
-            allowed_mentions=discord.AllowedMentions(
-                users=True
-            ),
+        await interaction.response.send_message("参加状況を更新しました。", ephemeral=True),
         )
 
     async def join_callback(
@@ -2522,20 +2432,7 @@ class CustomRecruitmentView(discord.ui.View):
 
         embed = message.embeds[0].copy()
         footer_text = embed.footer.text or ""
-
-        match = re.search(
-            r"Creator ID: (\d+)",
-            footer_text,
-        )
-
-        if match is None:
-            await interaction.response.send_message(
-                "募集作成者を確認できません。",
-                ephemeral=True,
-            )
-            return
-
-        creator_id = int(match.group(1))
+        creator_id = decode_hidden_user_id(footer_text)
 
         if not can_manage_recruit(
             interaction.user,
@@ -2624,70 +2521,6 @@ class CustomRecruitmentModal(discord.ui.Modal):
             )
             return
 
-        # 過去の募集から現在のリスト番号と件数を確認
-        latest_list = 0
-        latest_slot = 0
-
-        async for old_message in channel.history(
-            limit=1000,
-            oldest_first=False,
-        ):
-            if old_message.author.id != bot.user.id:
-                continue
-
-            if not old_message.embeds:
-                continue
-
-            footer = old_message.embeds[0].footer.text or ""
-
-            match = re.search(
-                r"Custom List: (\d+) Slot: (\d+)",
-                footer,
-            )
-
-            if match:
-                list_number = int(match.group(1))
-                slot_number = int(match.group(2))
-
-                if list_number > latest_list:
-                    latest_list = list_number
-                    latest_slot = slot_number
-
-                elif list_number == latest_list:
-                    latest_slot = max(
-                        latest_slot,
-                        slot_number,
-                    )
-
-        if latest_list == 0:
-            list_number = 1
-            slot_number = 1
-
-        elif latest_slot >= CUSTOM_RECRUIT_PER_LIST:
-            list_number = latest_list + 1
-            slot_number = 1
-
-        else:
-            list_number = latest_list
-            slot_number = latest_slot + 1
-
-        # 3件ごとに新しいリスト見出しを作成
-        if slot_number == 1:
-            list_embed = discord.Embed(
-                title=f"🎮 カスタム募集リスト #{list_number}",
-                description=(
-                    "このリストのカスタム募集です。\n"
-                    "各募集のボタンから参加・辞退できます。"
-                ),
-                color=discord.Color.blurple(),
-            )
-
-            list_embed.set_footer(
-                text=f"Custom List Header: {list_number}"
-            )
-
-            await channel.send(embed=list_embed)
-
         # 募集内容を作成
         embed = discord.Embed(
             title=f"🎮 {self.title_input.value.strip()}",
@@ -2723,13 +2556,7 @@ class CustomRecruitmentModal(discord.ui.Modal):
             [],
         )
 
-        embed.set_footer(
-            text=(
-                f"Custom List: {list_number} "
-                f"Slot: {slot_number} "
-                f"Creator ID: {interaction.user.id}"
-            )
-        )
+        embed.set_footer(text=encode_hidden_user_id(interaction.user.id))
 
         try:
             await channel.send(
@@ -2759,8 +2586,7 @@ class CustomRecruitmentModal(discord.ui.Modal):
             return
 
         await interaction.followup.send(
-            f"カスタム募集を作成しました！\n"
-            f"リスト：#{list_number}（{slot_number}/3件目）",
+            "カスタム募集を作成しました！",
             ephemeral=True,
         )
 
@@ -2833,7 +2659,7 @@ async def setup_custom_panel(
             "カスタムを開催したい方は、下のボタンを押してください。\n\n"
             "開催日時・募集タイトル・詳細を入力すると、"
             "カスタム募集が投稿されます。\n\n"
-            "募集は3件ごとに新しいリストに分かれます。"
+            ""
         ),
         color=discord.Color.blurple(),
     )
@@ -3044,45 +2870,11 @@ class RolePanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-        self.add_item(
-            SelectableRoleButton(
-                label="通常",
-                role_id=NORMAL_ROLE_ID,
-                custom_id="nexus:roles:normal",
-                emoji="🎮",
-            )
-        )
-
-        self.add_item(
-            SelectableRoleButton(
-                label="カスタム",
-                role_id=CUSTOM_ROLE_ID,
-                custom_id="nexus:roles:custom",
-                emoji="🛠️",
-            )
-        )
-
-        self.add_item(
-            SelectableRoleButton(
-                label="大会",
-                role_id=TOURNAMENT_ROLE_ID,
-                custom_id="nexus:roles:tournament",
-                emoji="🏆",
-            )
-        )
-
-        self.add_item(
-            SelectableRoleButton(
-                label="ランク",
-                role_id=RANK_ROLE_ID,
-                custom_id="nexus:roles:rank",
-                emoji="💎",
-            )
-        )
-
-        self.add_item(
-            ClearSelectableRolesButton()
-        )
+        self.add_item(SelectableRoleButton(label="ノーマル", role_id=NORMAL_ROLE_ID, custom_id="nexus:roles:normal", emoji="🎮"))
+        self.add_item(SelectableRoleButton(label="ランク", role_id=RANK_ROLE_ID, custom_id="nexus:roles:rank", emoji="💎"))
+        self.add_item(SelectableRoleButton(label="カスタム", role_id=CUSTOM_ROLE_ID, custom_id="nexus:roles:custom", emoji="🛠️"))
+        self.add_item(SelectableRoleButton(label="大会", role_id=TOURNAMENT_ROLE_ID, custom_id="nexus:roles:tournament", emoji="🏆"))
+        self.add_item(ClearSelectableRolesButton())
 
 
 # ============================================================
