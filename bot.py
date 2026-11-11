@@ -1,9 +1,11 @@
+
 """
-Nexus League Bot v5
+Nexus League Bot v5.2
 Python 3.10+ / discord.py 2.x
-SQLite stores operational data only. Player registration details (including Riot ID)
-are sent to Discord and are NEVER written to SQLite.
+SQLite stores operational data only.
+Player registration details (including Riot ID) are NEVER written to SQLite.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,42 +21,81 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from aiohttp import web
 
-# ---------------- Configuration ----------------
+
+# ============================================================
+# 1. 基本設定
+# ============================================================
+
 TOKEN = os.getenv("DISCORD_TOKEN", "")
 DB_PATH = os.getenv("DB_PATH", "nexus_league_v5.sqlite3")
 GUILD_ID = int(os.getenv("GUILD_ID", "0")) or None
+
 REPORT_USER_ID = 1392895521433321502
+
 REGISTRATION_CHANNEL_ID = 1566055273146093599
+
 RECRUIT_CHANNELS = {
     "normal": 1569643108147265709,
     "duo": 1569643437035229326,
     "flex": 1569643504994285,
 }
+
 CUSTOM_CHANNEL_ID = 1567318455391101030
+TOURNAMENT_CHANNEL_ID = 1566061702716329994
+
 ROLE_NAMES = ("ノーマル", "ランク", "カスタム", "大会")
+
 TEAM_CATEGORY_ID = int(os.getenv("TEAM_CATEGORY_ID", "0")) or None
 MATCHING_CATEGORY_ID = int(os.getenv("MATCHING_CATEGORY_ID", "0")) or None
 OPERATIONS_ROLE_ID = int(os.getenv("OPERATIONS_ROLE_ID", "0")) or None
+
 JST = ZoneInfo("Asia/Tokyo")
 PORT = int(os.getenv("PORT", "10000"))
+
 LOG = logging.getLogger("nexus")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-RANKS = [
-    ("CHALLENGER", "Challenger"), ("GRANDMASTER", "Grandmaster"),
-    ("MASTER", "Master"), ("DIAMOND_1_2", "Diamond I-II"),
-    ("DIAMOND_3_4", "Diamond III-IV"), ("EMERALD_1_2", "Emerald I-II"),
-    ("EMERALD_3_4", "Emerald III-IV"), ("PLATINUM", "Platinum"),
-    ("COACH", "コーチ"),
-]
-LANES = ("TOP", "JGL", "MID", "ADC", "SUP", "コーチ")
-RECRUIT_KIND_LABELS = {
-    "normal": "ノーマル・ARAM", "duo": "デュオランク",
-    "flex": "フレックス", "custom": "カスタム",
-}
-ROLE_MENTION_NAMES = {"normal": "ノーマル", "duo": "ランク", "flex": "ランク", "custom": "カスタム"}
 
-# ---------------- Database ----------------
+# ============================================================
+# 2. ランク・ポイント設定
+# ============================================================
+
+RANKS = [
+    ("CHALLENGER", "Challenger", 8),
+    ("GRANDMASTER", "Grandmaster", 7),
+    ("MASTER", "Master", 6),
+    ("DIAMOND_1_2", "Diamond I-II", 5),
+    ("DIAMOND_3_4", "Diamond III-IV", 4),
+    ("EMERALD_1_2", "Emerald I-II", 3),
+    ("EMERALD_3_4", "Emerald III-IV", 2),
+    ("PLATINUM", "Platinum I-IV", 1),
+    ("COACH", "コーチ", 0),
+]
+
+RANK_LABELS = {key: label for key, label, points in RANKS}
+RANK_POINTS = {key: points for key, label, points in RANKS}
+
+LANES = ("TOP", "JGL", "MID", "ADC", "SUP", "コーチ")
+
+RECRUIT_KIND_LABELS = {
+    "normal": "ノーマル・ARAM",
+    "duo": "デュオランク",
+    "flex": "フレックス",
+    "custom": "カスタム",
+}
+
+ROLE_MENTION_NAMES = {
+    "normal": "ノーマル",
+    "duo": "ランク",
+    "flex": "ランク",
+    "custom": "カスタム",
+}
+
+
+# ============================================================
+# 3. データベース
+# ============================================================
+
 def connect() -> sqlite3.Connection:
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
@@ -62,705 +103,3448 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     return con
 
+
 def init_db() -> None:
     with connect() as con:
-        # Explicitly purge legacy registration data before creating the v5 schema.
+
+        # 登録情報をDBに保存しない方針のため、旧playersテーブルを削除
         con.execute("DROP TABLE IF EXISTS players")
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS recruitment_posts(
-            message_id INTEGER PRIMARY KEY, guild_id INTEGER NOT NULL,
-            channel_id INTEGER NOT NULL, thread_id INTEGER NOT NULL,
-            kind TEXT NOT NULL, created_at TEXT NOT NULL
-        )""")
+            message_id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            thread_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """)
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS recruitment_participants(
-            message_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('regular','late')),
+            message_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL
+                CHECK(status IN ('regular','late')),
             joined_at TEXT NOT NULL,
             PRIMARY KEY(message_id,user_id),
-            FOREIGN KEY(message_id) REFERENCES recruitment_posts(message_id) ON DELETE CASCADE
-        )""")
+            FOREIGN KEY(message_id)
+                REFERENCES recruitment_posts(message_id)
+                ON DELETE CASCADE
+        )
+        """)
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS vc_sessions(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
-            joined_at TEXT NOT NULL, left_at TEXT
-        )""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            joined_at TEXT NOT NULL,
+            left_at TEXT
+        )
+        """)
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS vc_events(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
-            event TEXT NOT NULL, occurred_at TEXT NOT NULL
-        )""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            event TEXT NOT NULL,
+            occurred_at TEXT NOT NULL
+        )
+        """)
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS tournaments(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
-            creator_id INTEGER NOT NULL, name TEXT NOT NULL, starts_at TEXT NOT NULL,
-            rules TEXT NOT NULL, entry_type TEXT NOT NULL, status TEXT NOT NULL,
-            channel_id INTEGER, message_id INTEGER, created_at TEXT NOT NULL
-        )""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            creator_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            starts_at TEXT NOT NULL,
+            deadline_at TEXT,
+            rules TEXT NOT NULL,
+            entry_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            channel_id INTEGER,
+            message_id INTEGER,
+            created_at TEXT NOT NULL
+        )
+        """)
+
+        # 既存DBにdeadline_atがない場合の追加
+        columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(tournaments)"
+            ).fetchall()
+        }
+
+        if "deadline_at" not in columns:
+            con.execute(
+                "ALTER TABLE tournaments ADD COLUMN deadline_at TEXT"
+            )
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS tournament_entries(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, tournament_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL, team_name TEXT NOT NULL, members TEXT NOT NULL,
-            created_at TEXT NOT NULL, UNIQUE(tournament_id,user_id),
-            FOREIGN KEY(tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
-        )""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tournament_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            team_name TEXT NOT NULL,
+            members TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE(tournament_id,user_id),
+            FOREIGN KEY(tournament_id)
+                REFERENCES tournaments(id)
+                ON DELETE CASCADE
+        )
+        """)
+
         con.execute("""
         CREATE TABLE IF NOT EXISTS operation_logs(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER,
-            actor_id INTEGER, action TEXT NOT NULL, detail TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER,
+            actor_id INTEGER,
+            action TEXT NOT NULL,
+            detail TEXT NOT NULL,
             created_at TEXT NOT NULL
-        )""")
-        con.execute("CREATE INDEX IF NOT EXISTS idx_vc_user_time ON vc_sessions(user_id,joined_at,left_at)")
-        con.execute("CREATE INDEX IF NOT EXISTS idx_recruit_created ON recruitment_posts(created_at)")
+        )
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vc_user_time
+        ON vc_sessions(user_id,joined_at,left_at)
+        """)
+
+        con.execute("""
+        CREATE INDEX IF NOT EXISTS idx_recruit_created
+        ON recruitment_posts(created_at)
+        """)
+
+
+# ============================================================
+# 4. 共通処理
+# ============================================================
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-def log_action(guild_id: Optional[int], actor_id: Optional[int], action: str, detail: str = "") -> None:
+
+def log_action(
+    guild_id: Optional[int],
+    actor_id: Optional[int],
+    action: str,
+    detail: str = ""
+) -> None:
     with connect() as con:
-        con.execute("INSERT INTO operation_logs(guild_id,actor_id,action,detail,created_at) VALUES(?,?,?,?,?)",
-                    (guild_id, actor_id, action, detail[:1500], now_iso()))
+        con.execute(
+            """
+            INSERT INTO operation_logs
+            (guild_id,actor_id,action,detail,created_at)
+            VALUES(?,?,?,?,?)
+            """,
+            (
+                guild_id,
+                actor_id,
+                action,
+                detail[:1500],
+                now_iso()
+            )
+        )
+
 
 def is_admin():
-    return app_commands.checks.has_permissions(administrator=True)
+    return app_commands.checks.has_permissions(
+        administrator=True
+    )
 
-async def safe_ephemeral(interaction: discord.Interaction, content: str):
+
+async def safe_ephemeral(
+    interaction: discord.Interaction,
+    content: str
+):
     if interaction.response.is_done():
-        await interaction.followup.send(content, ephemeral=True)
+        await interaction.followup.send(
+            content,
+            ephemeral=True
+        )
     else:
-        await interaction.response.send_message(content, ephemeral=True)
+        await interaction.response.send_message(
+            content,
+            ephemeral=True
+        )
 
-# ---------------- Common UI: recruitment ----------------
-class RecruitmentView(discord.ui.View):
-    """Persistent per-message buttons; message_id is resolved from interaction.message."""
-    def __init__(self):
-        super().__init__(timeout=None)
 
-    async def _change(self, interaction: discord.Interaction, status: str):
-        if not interaction.message or not interaction.guild:
-            return await safe_ephemeral(interaction, "サーバー内の募集投稿から操作してください。")
-        mid, uid = interaction.message.id, interaction.user.id
-        with connect() as con:
-            post = con.execute("SELECT thread_id FROM recruitment_posts WHERE message_id=?", (mid,)).fetchone()
-            if not post:
-                return await safe_ephemeral(interaction, "募集データが見つかりません。")
-            existing = con.execute("SELECT status FROM recruitment_participants WHERE message_id=? AND user_id=?",
-                                   (mid, uid)).fetchone()
-            if status == "withdraw":
-                con.execute("DELETE FROM recruitment_participants WHERE message_id=? AND user_id=?", (mid, uid))
-            else:
-                con.execute("""INSERT INTO recruitment_participants(message_id,user_id,status,joined_at)
-                               VALUES(?,?,?,?) ON CONFLICT(message_id,user_id)
-                               DO UPDATE SET status=excluded.status, joined_at=excluded.joined_at""",
-                            (mid, uid, status, now_iso()))
-        thread = interaction.guild.get_thread(post["thread_id"])
-        if thread is None:
-            try:
-                fetched = await interaction.guild.fetch_channel(post["thread_id"])
-                thread = fetched if isinstance(fetched, discord.Thread) else None
-            except discord.HTTPException:
-                thread = None
-        if thread is not None:
-            try:
-                if status == "withdraw":
-                    await thread.remove_user(interaction.user)
-                    await thread.send(f"🚪 {interaction.user.mention} さんが辞退しました。")
-                else:
-                    await thread.add_user(interaction.user)
-                    label = "途中参加" if status == "late" else "通常参加"
-                    await thread.send(f"🙋 {interaction.user.mention} さんが{label}しました。")
-            except discord.HTTPException:
-                LOG.exception("Thread membership update failed")
-        await self._refresh(interaction.message)
-        if status == "withdraw":
-            await safe_ephemeral(interaction, "辞退しました。再参加できます。")
-        else:
-            await safe_ephemeral(interaction, f"{'途中参加' if status == 'late' else '参加'}を受け付けました。")
+def get_rank_label(rank_key: str) -> str:
+    return RANK_LABELS.get(rank_key, rank_key)
 
-    async def _refresh(self, message: discord.Message):
-        with connect() as con:
-            rows = con.execute("""SELECT user_id,status FROM recruitment_participants
-                                  WHERE message_id=? ORDER BY joined_at""", (message.id,)).fetchall()
-        regular = [f"<@{r['user_id']}>" for r in rows if r["status"] == "regular"]
-        late = [f"<@{r['user_id']}>" for r in rows if r["status"] == "late"]
-        embed = message.embeds[0] if message.embeds else discord.Embed(title="募集")
-        # Preserve title/description and append participant fields.
-        embed.clear_fields()
-        embed.add_field(name=f"通常参加 ({len(regular)})", value="\n".join(regular) or "なし", inline=True)
-        embed.add_field(name=f"途中参加 ({len(late)})", value="\n".join(late) or "なし", inline=True)
-        try:
-            await message.edit(embed=embed, view=self)
-        except discord.HTTPException:
-            LOG.exception("Could not refresh recruitment message")
 
-    @discord.ui.button(label="参加", style=discord.ButtonStyle.success, emoji="🙋", custom_id="nexus:v5:recruit:join")
-    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._change(interaction, "regular")
+def get_rank_points(rank_key: str) -> int:
+    return RANK_POINTS.get(rank_key, 0)
 
-    @discord.ui.button(label="途中参加", style=discord.ButtonStyle.primary, emoji="⏩", custom_id="nexus:v5:recruit:late")
-    async def late(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._change(interaction, "late")
 
-    @discord.ui.button(label="辞退", style=discord.ButtonStyle.danger, emoji="🚪", custom_id="nexus:v5:recruit:withdraw")
-    async def withdraw(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._change(interaction, "withdraw")
+def parse_jst_datetime(value: str) -> Optional[datetime]:
+    try:
+        result = datetime.strptime(
+            value.strip(),
+            "%Y-%m-%d %H:%M"
+        )
+        return result.replace(tzinfo=JST)
+    except ValueError:
+        return None
 
-async def create_recruit_thread(message: discord.Message, kind: str):
-    label = RECRUIT_KIND_LABELS[kind]
-    role = discord.utils.get(message.guild.roles, name=ROLE_MENTION_NAMES[kind]) if message.guild else None
-    mention = role.mention if role else ""
-    thread = await message.create_thread(name=f"{label}｜{message.author.display_name}"[:100],
-                                         auto_archive_duration=1440)
-    await thread.send(f"{mention} {message.author.mention} さんの募集スレッドです。",
-                      allowed_mentions=discord.AllowedMentions(roles=[role] if role else [], users=True))
-    with connect() as con:
-        con.execute("""INSERT OR REPLACE INTO recruitment_posts
-            (message_id,guild_id,channel_id,thread_id,kind,created_at) VALUES(?,?,?,?,?,?)""",
-            (message.id, message.guild.id, message.channel.id, thread.id, kind, now_iso()))
-    return thread
 
-# ---------------- Registration: intentionally no persistence ----------------
-class RegistrationModal(discord.ui.Modal, title="プレイヤー登録情報"):
-    riot_id = discord.ui.TextInput(label="Riot ID（名前#タグ）", max_length=100)
-    role = discord.ui.TextInput(label="メインロール（TOP/JGL/MID/ADC/SUP/コーチ）", max_length=20)
-    intro = discord.ui.TextInput(label="自己PR・得意チャンピオン", style=discord.TextStyle.paragraph,
-                                 required=False, max_length=900)
-    def __init__(self, rank: str):
+
+# ============================================================
+# 5. プレイヤー登録
+# ============================================================
+
+class RegistrationModal(
+    discord.ui.Modal,
+    title="プレイヤー登録情報"
+):
+    riot_id = discord.ui.TextInput(
+        label="Riot ID（名前#タグ）",
+        placeholder="例：Player#JP1",
+        max_length=100
+    )
+
+    role = discord.ui.TextInput(
+        label="メインロール（TOP/JGL/MID/ADC/SUP/コーチ）",
+        placeholder="例：MID",
+        max_length=20
+    )
+
+    intro = discord.ui.TextInput(
+        label="自己PR・得意チャンピオン",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=900
+    )
+
+    def __init__(self, rank_key: str):
         super().__init__()
-        self.rank = rank
+        self.rank_key = rank_key
 
-    async def on_submit(self, interaction: discord.Interaction):
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
         riot = self.riot_id.value.strip()
         role = self.role.value.strip().upper()
-        if "#" not in riot or not all(riot.split("#", 1)) or role not in LANES:
-            return await safe_ephemeral(interaction, "Riot IDは名前#タグ、ロールはTOP/JGL/MID/ADC/SUP/コーチで入力してください。")
-        channel = interaction.guild.get_channel(REGISTRATION_CHANNEL_ID) if interaction.guild else None
-        if channel is None and interaction.guild:
+
+        if "#" not in riot or not all(
+            riot.split("#", 1)
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "Riot IDは「名前#タグ」の形式で入力してください。"
+            )
+
+        if role not in LANES:
+            return await safe_ephemeral(
+                interaction,
+                "ロールはTOP / JGL / MID / ADC / SUP / コーチから入力してください。"
+            )
+
+        if interaction.guild is None:
+            return await safe_ephemeral(
+                interaction,
+                "サーバー内から登録してください。"
+            )
+
+        channel = interaction.guild.get_channel(
+            REGISTRATION_CHANNEL_ID
+        )
+
+        if channel is None:
             try:
-                channel = await interaction.guild.fetch_channel(REGISTRATION_CHANNEL_ID)
+                channel = await interaction.guild.fetch_channel(
+                    REGISTRATION_CHANNEL_ID
+                )
             except discord.HTTPException:
                 channel = None
-        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
-            return await safe_ephemeral(interaction, "登録情報送信先チャンネルが見つかりません。登録は完了していません。")
-        rank_label = dict(RANKS).get(self.rank, self.rank)
-        embed = discord.Embed(title="プレイヤー登録申請", color=discord.Color.blurple(),
-                              timestamp=datetime.now(timezone.utc))
-        embed.add_field(name="Discord", value=f"{interaction.user.mention}（{interaction.user.id}）", inline=False)
-        embed.add_field(name="Riot ID", value=discord.utils.escape_markdown(riot), inline=True)
-        embed.add_field(name="最高ランク", value=rank_label, inline=True)
-        embed.add_field(name="メインロール", value=role, inline=True)
-        embed.add_field(name="自己PR", value=self.intro.value.strip() or "未記入", inline=False)
-        embed.set_footer(text="Google Sheets等への登録は運営が手動で行ってください")
+
+        if not isinstance(
+            channel,
+            (discord.TextChannel, discord.Thread)
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "登録情報の送信先が見つかりません。登録は完了していません。"
+            )
+
+        rank_label = get_rank_label(self.rank_key)
+        rank_points = get_rank_points(self.rank_key)
+
+        embed = discord.Embed(
+            title="プレイヤー登録申請",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.add_field(
+            name="Discord",
+            value=f"{interaction.user.mention}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Riot ID",
+            value=discord.utils.escape_markdown(riot),
+            inline=True
+        )
+
+        embed.add_field(
+            name="最高ランク",
+            value=rank_label,
+            inline=True
+        )
+
+        embed.add_field(
+            name="ランクポイント",
+            value=f"{rank_points} pt",
+            inline=True
+        )
+
+        embed.add_field(
+            name="メインロール",
+            value=role,
+            inline=True
+        )
+
+        embed.add_field(
+            name="自己PR",
+            value=self.intro.value.strip() or "未記入",
+            inline=False
+        )
+
+        embed.set_footer(
+            text="登録情報はBotのデータベースには保存されません。"
+        )
+
         try:
-            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
         except (discord.Forbidden, discord.HTTPException):
-            LOG.exception("Registration submission failed")
-            return await safe_ephemeral(interaction, "登録情報の送信に失敗しました。登録は完了していません。運営に連絡してください。")
-        await safe_ephemeral(interaction, "登録情報を運営チャンネルへ送信しました。運営による確認・手動登録をお待ちください。")
+            LOG.exception(
+                "Registration submission failed"
+            )
+
+            return await safe_ephemeral(
+                interaction,
+                "登録情報の送信に失敗しました。登録は完了していません。運営に連絡してください。"
+            )
+
+        await safe_ephemeral(
+            interaction,
+            "登録情報を運営チャンネルへ送信しました。運営の確認をお待ちください。"
+        )
+
+
+# ============================================================
+# 6. ランク選択メニュー
+# ============================================================
 
 class RankSelect(discord.ui.Select):
+
     def __init__(self):
-        super().__init__(placeholder="最高ランクを選択", min_values=1, max_values=1,
-                         options=[discord.SelectOption(label=label, value=key) for key, label in RANKS])
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(RegistrationModal(self.values[0]))
+        options = []
+
+        for key, label, points in RANKS:
+            options.append(
+                discord.SelectOption(
+                    label=f"{label}（{points}pt）",
+                    value=key,
+                    description=f"ランクポイント：{points}pt"
+                )
+            )
+
+        super().__init__(
+            placeholder="最高ランクを選択してください",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction
+    ):
+        selected_rank = self.values[0]
+
+        await interaction.response.send_modal(
+            RegistrationModal(selected_rank)
+        )
+
 
 class RankSelectView(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=180)
         self.add_item(RankSelect())
 
+
+# ============================================================
+# 7. プレイヤー登録パネル
+# ============================================================
+
 class RegistrationPanelView(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="プレイヤー登録", style=discord.ButtonStyle.success,
-                       custom_id="nexus:v5:registration:open")
-    async def open(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("最高ランクを選択してください。", view=RankSelectView(), ephemeral=True)
 
-# ---------------- FA card: post only, no database ----------------
-class FaModal(discord.ui.Modal, title="FA選手カード"):
-    riot = discord.ui.TextInput(label="Riot ID（名前#タグ）", max_length=100)
-    rank = discord.ui.TextInput(label="ランク", max_length=60)
-    role = discord.ui.TextInput(label="メインロール", max_length=20)
-    intro = discord.ui.TextInput(label="自己PR", style=discord.TextStyle.paragraph, required=False, max_length=900)
-    async def on_submit(self, interaction: discord.Interaction):
+    @discord.ui.button(
+        label="プレイヤー登録",
+        style=discord.ButtonStyle.success,
+        emoji="📝",
+        custom_id="nexus:v52:registration:open"
+    )
+    async def open_registration(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_message(
+            "最高ランクを選択してください。",
+            view=RankSelectView(),
+            ephemeral=True
+        )
+
+
+# ============================================================
+# 8. FA選手カード
+# ============================================================
+
+class FaModal(
+    discord.ui.Modal,
+    title="FA選手カード"
+):
+
+    riot = discord.ui.TextInput(
+        label="Riot ID（名前#タグ）",
+        placeholder="例：Player#JP1",
+        max_length=100
+    )
+
+    rank = discord.ui.TextInput(
+        label="ランク",
+        placeholder="例：Diamond I",
+        max_length=60
+    )
+
+    role = discord.ui.TextInput(
+        label="メインロール",
+        placeholder="例：MID",
+        max_length=20
+    )
+
+    intro = discord.ui.TextInput(
+        label="自己PR・得意チャンピオン",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=900
+    )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
         riot = self.riot.value.strip()
-        if "#" not in riot:
-            return await safe_ephemeral(interaction, "Riot IDは名前#タグ形式で入力してください。")
-        embed = discord.Embed(title="FA選手カード", color=discord.Color.blurple())
-        embed.set_author(name=f"{riot}｜{self.rank.value}｜{self.role.value}",
-                         icon_url=interaction.user.display_avatar.url)
-        embed.add_field(name="Riot ID", value=discord.utils.escape_markdown(riot), inline=True)
-        embed.add_field(name="ランク", value=self.rank.value, inline=True)
-        embed.add_field(name="ロール", value=self.role.value, inline=True)
-        embed.add_field(name="自己PR", value=self.intro.value.strip() or "未記入", inline=False)
-        embed.set_footer(text=f"投稿者: {interaction.user}")
+
+        if "#" not in riot or not all(
+            riot.split("#", 1)
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "Riot IDは「名前#タグ」の形式で入力してください。"
+            )
+
+        if interaction.guild is None:
+            return await safe_ephemeral(
+                interaction,
+                "サーバー内から操作してください。"
+            )
+
+        channel = interaction.channel
+
+        if not isinstance(
+            channel,
+            (discord.TextChannel, discord.Thread)
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "このチャンネルには投稿できません。"
+            )
+
+        embed = discord.Embed(
+            title="🌟 FA選手カード",
+            description="選手募集・チーム加入希望",
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.set_author(
+            name=f"{riot}｜{self.rank.value}｜{self.role.value}",
+            icon_url=interaction.user.display_avatar.url
+        )
+
+        embed.add_field(
+            name="Riot ID",
+            value=discord.utils.escape_markdown(riot),
+            inline=True
+        )
+
+        embed.add_field(
+            name="ランク",
+            value=self.rank.value,
+            inline=True
+        )
+
+        embed.add_field(
+            name="メインロール",
+            value=self.role.value,
+            inline=True
+        )
+
+        embed.add_field(
+            name="自己PR",
+            value=self.intro.value.strip() or "未記入",
+            inline=False
+        )
+
+        embed.set_footer(
+            text=f"投稿者：{interaction.user}"
+        )
+
         try:
-            await interaction.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException:
-            return await safe_ephemeral(interaction, "FAカードを投稿できませんでした。")
-        await safe_ephemeral(interaction, "FAカードを投稿しました。")
+            await channel.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+        except (discord.Forbidden, discord.HTTPException):
+            LOG.exception("FA card submission failed")
+
+            return await safe_ephemeral(
+                interaction,
+                "FAカードを投稿できませんでした。"
+            )
+
+        await safe_ephemeral(
+            interaction,
+            "FAカードを投稿しました。"
+        )
+
+
+# ============================================================
+# 9. FAカード管理パネル
+# ============================================================
 
 class FaPanelView(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="FA選手カードを作成", style=discord.ButtonStyle.primary,
-                       custom_id="nexus:v5:fa:create")
-    async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(FaModal())
 
-# ---------------- Role panel ----------------
-class RolePanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        for name in ROLE_NAMES:
-            b = discord.ui.Button(label=f"＠{name}", style=discord.ButtonStyle.primary,
-                                  custom_id=f"nexus:v5:role:add:{name}")
-            async def callback(interaction: discord.Interaction, role_name=name):
-                await self.toggle(interaction, role_name)
-            b.callback = callback
-            self.add_item(b)
-        clear = discord.ui.Button(label="全てのロールを外す", style=discord.ButtonStyle.danger,
-                                  custom_id="nexus:v5:role:clear", row=1)
-        clear.callback = self.clear
-        self.add_item(clear)
+    @discord.ui.button(
+        label="FA選手カードを作成",
+        style=discord.ButtonStyle.primary,
+        emoji="🌟",
+        custom_id="nexus:v52:fa:create"
+    )
+    async def create_fa_card(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(
+            FaModal()
+        )
 
-    async def toggle(self, interaction: discord.Interaction, name: str):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await safe_ephemeral(interaction, "サーバー内で操作してください。")
-        role = discord.utils.get(interaction.guild.roles, name=name)
-        if role is None:
-            return await safe_ephemeral(interaction, f"ロール「{name}」が見つかりません。")
-        me = interaction.guild.me
-        if me is None or role >= me.top_role or role.managed:
-            return await safe_ephemeral(interaction, f"ロール「{name}」はBotの権限階層上、操作できません。")
-        try:
-            if role in interaction.user.roles:
-                await interaction.user.remove_roles(role, reason="Nexus role panel")
-                msg = f"＠{name} を解除しました。"
-            else:
-                await interaction.user.add_roles(role, reason="Nexus role panel")
-                msg = f"＠{name} を付与しました。"
-            await safe_ephemeral(interaction, msg)
-        except discord.HTTPException:
-            await safe_ephemeral(interaction, "ロールを変更できませんでした。権限とロール階層を確認してください。")
 
-    async def clear(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await safe_ephemeral(interaction, "サーバー内で操作してください。")
-        roles = [r for r in interaction.guild.roles if r.name in ROLE_NAMES and r in interaction.user.roles]
-        me = interaction.guild.me
-        removable = [r for r in roles if me and not r.managed and r < me.top_role]
-        try:
-            if removable:
-                await interaction.user.remove_roles(*removable, reason="Nexus role panel clear")
-            blocked = len(roles) - len(removable)
-            await safe_ephemeral(interaction, f"対象ロールを解除しました。"+(f" {blocked}個は権限階層上解除できませんでした。" if blocked else ""))
-        except discord.HTTPException:
-            await safe_ephemeral(interaction, "ロール解除に失敗しました。")
+# ============================================================
+# 10. チーム関連の非公開申請フォーム
+# ============================================================
 
-# ---------------- Team & matching private intake ----------------
-class PrivateRequestModal(discord.ui.Modal):
-    subject = discord.ui.TextInput(label="チーム名／希望内容", max_length=100)
-    details = discord.ui.TextInput(label="申請内容", style=discord.TextStyle.paragraph, max_length=1500)
+class PrivateRequestModal(
+    discord.ui.Modal
+):
+
     def __init__(self, request_type: str):
-        super().__init__(title="チーム申請" if request_type == "team" else "マッチング希望")
         self.request_type = request_type
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild:
-            return await safe_ephemeral(interaction, "サーバー内で実行してください。")
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        category_id = TEAM_CATEGORY_ID if self.request_type == "team" else MATCHING_CATEGORY_ID
-        category = interaction.guild.get_channel(category_id) if category_id else None
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+
+        settings = {
+            "team_create": {
+                "title": "チーム結成申請",
+                "channel": "チーム結成",
+                "category_id": TEAM_CATEGORY_ID,
+                "first_label": "チーム名",
+                "first_placeholder": "結成するチーム名",
+                "second_label": "募集メンバー・希望条件",
+                "second_placeholder": "募集ロール、ランク、活動時間など"
+            },
+            "team_disband": {
+                "title": "チーム解散申請",
+                "channel": "チーム解散",
+                "category_id": TEAM_CATEGORY_ID,
+                "first_label": "チーム名",
+                "first_placeholder": "解散するチーム名",
+                "second_label": "解散理由・連絡事項",
+                "second_placeholder": "運営への連絡事項"
+            },
+            "matching": {
+                "title": "マッチング希望申請",
+                "channel": "マッチング希望",
+                "category_id": MATCHING_CATEGORY_ID,
+                "first_label": "希望するロール・ランク",
+                "first_placeholder": "例：MID / Diamond",
+                "second_label": "希望条件・自己PR",
+                "second_placeholder": "希望するチーム、活動時間、自己PRなど"
+            }
         }
-        if interaction.guild.me:
-            overwrites[interaction.guild.me] = discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
+
+        self.settings = settings[request_type]
+
+        super().__init__(
+            title=self.settings["title"]
+        )
+
+        self.first_input = discord.ui.TextInput(
+            label=self.settings["first_label"],
+            placeholder=self.settings["first_placeholder"],
+            max_length=100,
+            required=True
+        )
+
+        self.second_input = discord.ui.TextInput(
+            label=self.settings["second_label"],
+            placeholder=self.settings["second_placeholder"],
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            required=True
+        )
+
+        self.add_item(self.first_input)
+        self.add_item(self.second_input)
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+        guild = interaction.guild
+
+        if guild is None:
+            return await safe_ephemeral(
+                interaction,
+                "サーバー内から申請してください。"
+            )
+
+        category_id = self.settings["category_id"]
+        category = None
+
+        if category_id:
+            category = guild.get_channel(category_id)
+
+            if category is None:
+                try:
+                    category = await guild.fetch_channel(
+                        category_id
+                    )
+                except discord.HTTPException:
+                    category = None
+
+            if not isinstance(
+                category,
+                discord.CategoryChannel
+            ):
+                return await safe_ephemeral(
+                    interaction,
+                    "申請先のカテゴリーが見つかりません。運営に連絡してください。"
+                )
+
+        bot_member = guild.me
+
+        if bot_member is None:
+            return await safe_ephemeral(
+                interaction,
+                "Botのサーバー情報を取得できませんでした。"
+            )
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True
+            ),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True
+            )
+        }
+
         if OPERATIONS_ROLE_ID:
-            ops = interaction.guild.get_role(OPERATIONS_ROLE_ID)
-            if ops:
-                overwrites[ops] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-        safe_name = f"{'team' if self.request_type == 'team' else 'matching'}-{interaction.user.id}"
+            operations_role = guild.get_role(
+                OPERATIONS_ROLE_ID
+            )
+
+            if operations_role is not None:
+                overwrites[operations_role] = (
+                    discord.PermissionOverwrite(
+                        view_channel=True,
+                        send_messages=True,
+                        read_message_history=True
+                    )
+                )
+
+        embed = discord.Embed(
+            title=self.settings["title"],
+            color=discord.Color.blurple(),
+            timestamp=datetime.now(timezone.utc)
+        )
+
+        embed.add_field(
+            name=self.settings["first_label"],
+            value=self.first_input.value.strip(),
+            inline=False
+        )
+
+        embed.add_field(
+            name=self.settings["second_label"],
+            value=self.second_input.value.strip(),
+            inline=False
+        )
+
+        embed.add_field(
+            name="申請者",
+            value=interaction.user.mention,
+            inline=False
+        )
+
         try:
-            channel = await interaction.guild.create_text_channel(
-                name=safe_name[:90], category=category if isinstance(category, discord.CategoryChannel) else None,
-                overwrites=overwrites, topic=f"{self.subject.value} | applicant={interaction.user.id}")
-            embed = discord.Embed(title="チーム結成・解散申請" if self.request_type == "team" else "マッチング受付",
-                                  description=self.details.value, color=discord.Color.blurple())
-            embed.add_field(name="申請者", value=interaction.user.mention)
-            embed.add_field(name="件名", value=self.subject.value)
-            embed.set_footer(text="マッチングの実作業は別AIが担当します。" if self.request_type == "matching" else "運営確認用")
-            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-            log_action(interaction.guild.id, interaction.user.id, f"{self.request_type}_request", channel.name)
-            await interaction.followup.send(f"非公開受付チャンネルを作成しました: {channel.mention}", ephemeral=True)
+            channel = await guild.create_text_channel(
+                name=self.settings["channel"],
+                category=category,
+                overwrites=overwrites,
+                topic=(
+                    f"{self.settings['title']}｜"
+                    f"申請者ID：{interaction.user.id}"
+                ),
+                reason=(
+                    f"{self.settings['title']} "
+                    f"by {interaction.user}"
+                )
+            )
+
+            await channel.send(
+                content=interaction.user.mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True,
+                    roles=False,
+                    everyone=False
+                )
+            )
+
+        except discord.Forbidden:
+            LOG.exception(
+                "Private request channel permission error"
+            )
+
+            return await safe_ephemeral(
+                interaction,
+                "申請チャンネルを作成できませんでした。Botにチャンネル管理権限があるか確認してください。"
+            )
+
         except discord.HTTPException:
-            LOG.exception("Private request channel creation failed")
-            await interaction.followup.send("受付チャンネルを作成できませんでした。Bot権限を確認してください。", ephemeral=True)
+            LOG.exception(
+                "Private request channel creation failed"
+            )
 
-class RequestPanelView(discord.ui.View):
-    def __init__(self, panel_type: str):
+            return await safe_ephemeral(
+                interaction,
+                "申請チャンネルの作成に失敗しました。時間をおいて再度お試しください。"
+            )
+
+        await safe_ephemeral(
+            interaction,
+            f"申請を受け付けました。\n"
+            f"専用チャンネルはこちらです：{channel.mention}"
+        )
+
+
+# ============================================================
+# 11. チーム結成・チーム解散パネル
+# ============================================================
+
+class TeamPanelView(discord.ui.View):
+
+    def __init__(self):
         super().__init__(timeout=None)
-        self.panel_type = panel_type
-    @discord.ui.button(label="結成を申請", style=discord.ButtonStyle.success, custom_id="nexus:v5:team:create")
-    async def team_create(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.panel_type != "team":
-            return await safe_ephemeral(interaction, "このパネルでは使用できません。")
-        await interaction.response.send_modal(PrivateRequestModal("team"))
-    @discord.ui.button(label="解散を申請", style=discord.ButtonStyle.danger, custom_id="nexus:v5:team:disband")
-    async def team_disband(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.panel_type != "team":
-            return await safe_ephemeral(interaction, "このパネルでは使用できません。")
-        await interaction.response.send_modal(PrivateRequestModal("team"))
-    @discord.ui.button(label="マッチングを希望する", style=discord.ButtonStyle.primary, custom_id="nexus:v5:matching:request")
-    async def matching(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.panel_type != "matching":
-            return await safe_ephemeral(interaction, "このパネルでは使用できません。")
-        await interaction.response.send_modal(PrivateRequestModal("matching"))
 
-# ---------------- Tournament ----------------
-class TournamentEntryModal(discord.ui.Modal, title="大会チームエントリー"):
-    team = discord.ui.TextInput(label="チーム名", max_length=80)
-    members = discord.ui.TextInput(label="メンバー（名前やDiscord IDを記載）",
-                                   style=discord.TextStyle.paragraph, max_length=800)
-    def __init__(self, tournament_id: int):
-        super().__init__()
+    @discord.ui.button(
+        label="チームを結成する",
+        style=discord.ButtonStyle.success,
+        emoji="🛡️",
+        custom_id="nexus:v52:team:create"
+    )
+    async def team_create(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(
+            PrivateRequestModal("team_create")
+        )
+
+    @discord.ui.button(
+        label="チームを解散する",
+        style=discord.ButtonStyle.danger,
+        emoji="🗑️",
+        custom_id="nexus:v52:team:disband"
+    )
+    async def team_disband(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(
+            PrivateRequestModal("team_disband")
+        )
+
+
+# ============================================================
+# 12. マッチング希望パネル
+# ============================================================
+
+class MatchingPanelView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="マッチングを希望する",
+        style=discord.ButtonStyle.primary,
+        emoji="🤝",
+        custom_id="nexus:v52:matching:request"
+    )
+    async def matching_request(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(
+            PrivateRequestModal("matching")
+        )
+
+
+# ============================================================
+# 13. 大会参加・辞退用モーダル
+# ============================================================
+
+class TournamentTeamModal(
+    discord.ui.Modal
+):
+
+    def __init__(
+        self,
+        tournament_id: int,
+        action: str
+    ):
         self.tournament_id = tournament_id
-    async def on_submit(self, interaction: discord.Interaction):
-        with connect() as con:
-            t = con.execute("SELECT status FROM tournaments WHERE id=?", (self.tournament_id,)).fetchone()
-            if not t or t["status"] != "open":
-                return await safe_ephemeral(interaction, "この大会は受付中ではありません。")
+        self.action = action
+
+        if action == "join":
+            title = "大会に参加する"
+            label = "参加するチーム名"
+            placeholder = "登録するチーム名を正確に入力してください"
+        else:
+            title = "大会を辞退する"
+            label = "辞退するチーム名"
+            placeholder = "参加登録時と完全に同じチーム名を入力してください"
+
+        super().__init__(title=title)
+
+        self.team_name = discord.ui.TextInput(
+            label=label,
+            placeholder=placeholder,
+            max_length=100,
+            required=True
+        )
+
+        self.add_item(self.team_name)
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+        team_name = self.team_name.value.strip()
+
+        if not team_name:
+            return await safe_ephemeral(
+                interaction,
+                "チーム名を入力してください。"
+            )
+
+        with connect() as conn:
+            tournament = conn.execute(
+                """
+                SELECT *
+                FROM tournaments
+                WHERE id = ?
+                """,
+                (self.tournament_id,)
+            ).fetchone()
+
+        if tournament is None:
+            return await safe_ephemeral(
+                interaction,
+                "大会情報が見つかりません。"
+            )
+
+        if tournament["status"] != "open":
+            return await safe_ephemeral(
+                interaction,
+                "この大会は現在受付を終了しています。"
+            )
+
+        now = datetime.now(
+            ZoneInfo("Asia/Tokyo")
+        )
+
+        deadline_text = tournament["deadline_at"]
+
+        if deadline_text:
             try:
-                con.execute("""INSERT INTO tournament_entries(tournament_id,user_id,team_name,members,created_at)
-                               VALUES(?,?,?,?,?)""",
-                            (self.tournament_id, interaction.user.id, self.team.value.strip(),
-                             self.members.value.strip(), now_iso()))
-            except sqlite3.IntegrityError:
-                return await safe_ephemeral(interaction, "この大会には既にエントリー済みです。")
-        await safe_ephemeral(interaction, "大会エントリーを受け付けました。")
+                deadline = datetime.fromisoformat(
+                    deadline_text
+                )
+
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(
+                        tzinfo=ZoneInfo("Asia/Tokyo")
+                    )
+
+                if now > deadline:
+                    return await safe_ephemeral(
+                        interaction,
+                        "この大会の参加締切を過ぎています。"
+                    )
+
+            except ValueError:
+                LOG.exception(
+                    "Invalid tournament deadline"
+                )
+
+                return await safe_ephemeral(
+                    interaction,
+                    "大会の締切情報を確認できません。運営に連絡してください。"
+                )
+
+        if self.action == "join":
+
+            with connect() as conn:
+                existing_team = conn.execute(
+                    """
+                    SELECT id
+                    FROM tournament_entries
+                    WHERE tournament_id = ?
+                    AND team_name = ?
+                    """,
+                    (
+                        self.tournament_id,
+                        team_name
+                    )
+                ).fetchone()
+
+                if existing_team is not None:
+                    return await safe_ephemeral(
+                        interaction,
+                        "このチーム名はすでに参加登録されています。"
+                    )
+
+                existing_user = conn.execute(
+                    """
+                    SELECT id
+                    FROM tournament_entries
+                    WHERE tournament_id = ?
+                    AND user_id = ?
+                    """,
+                    (
+                        self.tournament_id,
+                        interaction.user.id
+                    )
+                ).fetchone()
+
+                if existing_user is not None:
+                    return await safe_ephemeral(
+                        interaction,
+                        "あなたはすでにこの大会へ参加登録しています。"
+                    )
+
+                conn.execute(
+                    """
+                    INSERT INTO tournament_entries (
+                        tournament_id,
+                        user_id,
+                        team_name,
+                        members,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.tournament_id,
+                        interaction.user.id,
+                        team_name,
+                        "",
+                        now_iso()
+                    )
+                )
+
+            await refresh_tournament_message(
+                self.tournament_id
+            )
+
+            await safe_ephemeral(
+                interaction,
+                f"「{team_name}」の大会参加登録が完了しました。"
+            )
+
+        else:
+
+            with connect() as conn:
+                existing_team = conn.execute(
+                    """
+                    SELECT id
+                    FROM tournament_entries
+                    WHERE tournament_id = ?
+                    AND team_name = ?
+                    """,
+                    (
+                        self.tournament_id,
+                        team_name
+                    )
+                ).fetchone()
+
+                if existing_team is None:
+                    return await safe_ephemeral(
+                        interaction,
+                        "入力されたチーム名と完全一致する参加登録がありません。\n"
+                        "チーム名の入力間違いがないか確認してください。"
+                    )
+
+                conn.execute(
+                    """
+                    DELETE FROM tournament_entries
+                    WHERE tournament_id = ?
+                    AND team_name = ?
+                    """,
+                    (
+                        self.tournament_id,
+                        team_name
+                    )
+                )
+
+            await refresh_tournament_message(
+                self.tournament_id
+            )
+
+            await safe_ephemeral(
+                interaction,
+                f"「{team_name}」の大会参加登録を取り消しました。"
+            )
+
+
+# ============================================================
+# 14. 大会参加・辞退ボタン
+# ============================================================
 
 class TournamentPanelView(discord.ui.View):
-    def __init__(self, tournament_id: int):
+
+    def __init__(
+        self,
+        tournament_id: int
+    ):
         super().__init__(timeout=None)
+
         self.tournament_id = tournament_id
-        b = discord.ui.Button(label="チームエントリー", style=discord.ButtonStyle.success,
-                              custom_id=f"nexus:v5:tournament:entry:{tournament_id}")
-        b.callback = self.entry
-        self.add_item(b)
-        b2 = discord.ui.Button(label="参加一覧", style=discord.ButtonStyle.secondary,
-                               custom_id=f"nexus:v5:tournament:list:{tournament_id}")
-        b2.callback = self.list_entries
-        self.add_item(b2)
-    async def entry(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(TournamentEntryModal(self.tournament_id))
-    async def list_entries(self, interaction: discord.Interaction):
-        with connect() as con:
-            rows = con.execute("SELECT team_name,user_id FROM tournament_entries WHERE tournament_id=? ORDER BY id",
-                               (self.tournament_id,)).fetchall()
-        desc = "\n".join(f"**{r['team_name']}** — <@{r['user_id']}>" for r in rows) or "まだエントリーはありません。"
-        await safe_ephemeral(interaction, desc[:1900])
 
-class TournamentCreateModal(discord.ui.Modal, title="大会作成"):
-    name = discord.ui.TextInput(label="大会名", max_length=100)
-    starts = discord.ui.TextInput(label="開催日時（JST。例 2026-12-01 20:00）", max_length=30)
-    rules = discord.ui.TextInput(label="ルール", style=discord.TextStyle.paragraph, max_length=1500)
-    entry_type = discord.ui.TextInput(label="参加方式（チーム／個人）", max_length=20)
-    async def on_submit(self, interaction: discord.Interaction):
+        join_button = discord.ui.Button(
+            label="大会に参加する",
+            style=discord.ButtonStyle.success,
+            emoji="🏆",
+            custom_id=(
+                f"nexus:v52:tournament:{tournament_id}:join"
+            )
+        )
+
+        withdraw_button = discord.ui.Button(
+            label="辞退する",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id=(
+                f"nexus:v52:tournament:{tournament_id}:withdraw"
+            )
+        )
+
+        join_button.callback = self.join_callback
+        withdraw_button.callback = self.withdraw_callback
+
+        self.add_item(join_button)
+        self.add_item(withdraw_button)
+
+    async def join_callback(
+        self,
+        interaction: discord.Interaction
+    ):
+        await interaction.response.send_modal(
+            TournamentTeamModal(
+                self.tournament_id,
+                "join"
+            )
+        )
+
+    async def withdraw_callback(
+        self,
+        interaction: discord.Interaction
+    ):
+        await interaction.response.send_modal(
+            TournamentTeamModal(
+                self.tournament_id,
+                "withdraw"
+            )
+        )
+
+
+# ============================================================
+# 15. 大会参加チーム一覧の取得
+# ============================================================
+
+def get_tournament_teams(
+    tournament_id: int
+) -> list[str]:
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT team_name
+            FROM tournament_entries
+            WHERE tournament_id = ?
+            ORDER BY created_at ASC
+            """,
+            (tournament_id,)
+        ).fetchall()
+
+    teams = []
+
+    for row in rows:
+        name = row["team_name"]
+
+        if name and name not in teams:
+            teams.append(name)
+
+    return teams
+
+
+# ============================================================
+# 16. 大会情報Embedの作成
+# ============================================================
+
+def build_tournament_embed(
+    tournament,
+    tournament_id: int
+) -> discord.Embed:
+
+    teams = get_tournament_teams(
+        tournament_id
+    )
+
+    embed = discord.Embed(
+        title=f"🏆 {tournament['name']}",
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(
+        name="開催日時",
+        value=tournament["starts_at"],
+        inline=False
+    )
+
+    embed.add_field(
+        name="参加締切",
+        value=(
+            tournament["deadline_at"]
+            or "未設定"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="大会ルール",
+        value=(
+            tournament["rules"]
+            or "特になし"
+        ),
+        inline=False
+    )
+
+    if teams:
+        team_text = "\n".join(
+            f"{index}. {name}"
+            for index, name in enumerate(
+                teams,
+                start=1
+            )
+        )
+    else:
+        team_text = "まだ参加チームはありません。"
+
+    embed.add_field(
+        name=f"参加チーム一覧（{len(teams)}チーム）",
+        value=team_text[:4000],
+        inline=False
+    )
+
+    embed.set_footer(
+        text=f"大会ID：{tournament_id}｜チーム単位で参加登録"
+    )
+
+    return embed
+
+
+# ============================================================
+# 17. 大会投稿の更新
+# ============================================================
+
+async def refresh_tournament_message(
+    tournament_id: int
+):
+    with connect() as conn:
+        tournament = conn.execute(
+            """
+            SELECT *
+            FROM tournaments
+            WHERE id = ?
+            """,
+            (tournament_id,)
+        ).fetchone()
+
+    if tournament is None:
+        return
+
+    guild = bot.get_guild(
+        tournament["guild_id"]
+    )
+
+    if guild is None:
+        return
+
+    channel = guild.get_channel(
+        tournament["channel_id"]
+    )
+
+    if channel is None:
         try:
-            dt = datetime.strptime(self.starts.value.strip(), "%Y-%m-%d %H:%M").replace(tzinfo=JST)
-        except ValueError:
-            return await safe_ephemeral(interaction, "日時形式が正しくありません。YYYY-MM-DD HH:MM で入力してください。")
-        if self.entry_type.value.strip() not in ("チーム", "個人"):
-            return await safe_ephemeral(interaction, "参加方式は「チーム」または「個人」です。")
-        with connect() as con:
-            cur = con.execute("""INSERT INTO tournaments(guild_id,creator_id,name,starts_at,rules,entry_type,status,created_at)
-                VALUES(?,?,?,?,?,?,?,?)""",
-                (interaction.guild_id, interaction.user.id, self.name.value.strip(), dt.isoformat(),
-                 self.rules.value.strip(), self.entry_type.value.strip(), "open", now_iso()))
-            tid = cur.lastrowid
-        embed = discord.Embed(title=f"🏆 {self.name.value}", description=self.rules.value,
-                              color=discord.Color.gold())
-        embed.add_field(name="開催日時", value=dt.strftime("%Y-%m-%d %H:%M JST"))
-        embed.add_field(name="参加方式", value=self.entry_type.value)
-        try:
-            msg = await interaction.channel.send(embed=embed, view=TournamentPanelView(tid))
-            with connect() as con:
-                con.execute("UPDATE tournaments SET channel_id=?,message_id=? WHERE id=?",
-                            (msg.channel.id, msg.id, tid))
-            await safe_ephemeral(interaction, f"大会を作成しました（ID: {tid}）。")
+            channel = await guild.fetch_channel(
+                tournament["channel_id"]
+            )
         except discord.HTTPException:
-            with connect() as con:
-                con.execute("UPDATE tournaments SET status='draft' WHERE id=?", (tid,))
-            await safe_ephemeral(interaction, "大会情報は保存しましたが、受付パネルの投稿に失敗しました。運営が再設置してください。")
+            return
 
-# ---------------- Bot ----------------
+    if not isinstance(
+        channel,
+        (discord.TextChannel, discord.Thread)
+    ):
+        return
+
+    try:
+        message = await channel.fetch_message(
+            tournament["message_id"]
+        )
+
+        embed = build_tournament_embed(
+            tournament,
+            tournament_id
+        )
+
+        await message.edit(
+            embed=embed,
+            view=TournamentPanelView(
+                tournament_id
+            )
+        )
+
+    except discord.NotFound:
+        LOG.warning(
+            "Tournament message not found: %s",
+            tournament_id
+        )
+
+    except discord.HTTPException:
+        LOG.exception(
+            "Tournament message refresh failed: %s",
+            tournament_id
+        )
+
+
+# ============================================================
+# 18. 大会作成モーダル
+# ============================================================
+
+class TournamentCreateModal(
+    discord.ui.Modal,
+    title="大会を作成する"
+):
+
+    name = discord.ui.TextInput(
+        label="大会名",
+        placeholder="例：Nexus League Cup",
+        max_length=100
+    )
+
+    starts_at = discord.ui.TextInput(
+        label="開催日時（YYYY-MM-DD HH:MM）",
+        placeholder="例：2026-12-01 20:00",
+        max_length=16
+    )
+
+    deadline_at = discord.ui.TextInput(
+        label="参加締切日時（YYYY-MM-DD HH:MM）",
+        placeholder="例：2026-11-30 23:59",
+        max_length=16
+    )
+
+    rules = discord.ui.TextInput(
+        label="大会ルール",
+        style=discord.TextStyle.paragraph,
+        placeholder="大会のルールを入力してください。",
+        required=False,
+        max_length=1500
+    )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+        if interaction.guild is None:
+            return await safe_ephemeral(
+                interaction,
+                "サーバー内から大会を作成してください。"
+            )
+
+        try:
+            start_time = datetime.strptime(
+                self.starts_at.value.strip(),
+                "%Y-%m-%d %H:%M"
+            ).replace(
+                tzinfo=ZoneInfo("Asia/Tokyo")
+            )
+
+            deadline_time = datetime.strptime(
+                self.deadline_at.value.strip(),
+                "%Y-%m-%d %H:%M"
+            ).replace(
+                tzinfo=ZoneInfo("Asia/Tokyo")
+            )
+
+        except ValueError:
+            return await safe_ephemeral(
+                interaction,
+                "日時は「2026-12-01 20:00」の形式で入力してください。"
+            )
+
+        now = datetime.now(
+            ZoneInfo("Asia/Tokyo")
+        )
+
+        if deadline_time <= now:
+            return await safe_ephemeral(
+                interaction,
+                "参加締切は現在より未来の日時にしてください。"
+            )
+
+        if deadline_time > start_time:
+            return await safe_ephemeral(
+                interaction,
+                "参加締切は開催日時より前に設定してください。"
+            )
+
+        channel = interaction.guild.get_channel(
+            TOURNAMENT_CHANNEL_ID
+        )
+
+        if channel is None:
+            try:
+                channel = await interaction.guild.fetch_channel(
+                    TOURNAMENT_CHANNEL_ID
+                )
+            except discord.HTTPException:
+                channel = None
+
+        if not isinstance(
+            channel,
+            discord.TextChannel
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "大会投稿先チャンネルが見つかりません。"
+            )
+
+        try:
+            with connect() as conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO tournaments (
+                        guild_id,
+                        creator_id,
+                        name,
+                        starts_at,
+                        rules,
+                        entry_type,
+                        status,
+                        channel_id,
+                        message_id,
+                        created_at,
+                        deadline_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        interaction.guild.id,
+                        interaction.user.id,
+                        self.name.value.strip(),
+                        start_time.isoformat(),
+                        self.rules.value.strip(),
+                        "team",
+                        "open",
+                        channel.id,
+                        0,
+                        now_iso(),
+                        deadline_time.isoformat()
+                    )
+                )
+
+                tournament_id = cursor.lastrowid
+
+            with connect() as conn:
+                tournament = conn.execute(
+                    """
+                    SELECT *
+                    FROM tournaments
+                    WHERE id = ?
+                    """,
+                    (tournament_id,)
+                ).fetchone()
+
+            embed = build_tournament_embed(
+                tournament,
+                tournament_id
+            )
+
+            message = await channel.send(
+                embed=embed,
+                view=TournamentPanelView(
+                    tournament_id
+                ),
+                allowed_mentions=discord.AllowedMentions.none()
+            )
+
+            with connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE tournaments
+                    SET message_id = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        message.id,
+                        tournament_id
+                    )
+                )
+
+            await log_action(
+                interaction.guild.id,
+                interaction.user.id,
+                "tournament_create",
+                f"大会ID：{tournament_id}｜大会名：{self.name.value.strip()}"
+            )
+
+        except Exception:
+            LOG.exception(
+                "Tournament creation failed"
+            )
+
+            return await safe_ephemeral(
+                interaction,
+                "大会の作成に失敗しました。運営に連絡してください。"
+            )
+
+        await safe_ephemeral(
+            interaction,
+            f"大会を作成しました。\n投稿先：{channel.mention}"
+        )
+
+
+# ============================================================
+# 19. 募集投稿の参加状況を取得
+# ============================================================
+
+def get_recruitment_counts(
+    message_id: int
+) -> tuple[int, int]:
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT status, COUNT(*) AS total
+            FROM recruitment_participants
+            WHERE message_id = ?
+            GROUP BY status
+            """,
+            (message_id,)
+        ).fetchall()
+
+    regular = 0
+    late = 0
+
+    for row in rows:
+        if row["status"] == "regular":
+            regular = row["total"]
+        elif row["status"] == "late":
+            late = row["total"]
+
+    return regular, late
+
+
+# ============================================================
+# 20. 募集投稿Embedの作成
+# ============================================================
+
+def build_recruitment_embed(
+    title: str,
+    description: str,
+    message_id: int
+) -> discord.Embed:
+
+    regular, late = get_recruitment_counts(
+        message_id
+    )
+
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    embed.add_field(
+        name="通常参加",
+        value=f"{regular}人",
+        inline=True
+    )
+
+    embed.add_field(
+        name="途中参加",
+        value=f"{late}人",
+        inline=True
+    )
+
+    embed.add_field(
+        name="参加合計",
+        value=f"{regular + late}人",
+        inline=True
+    )
+
+    embed.set_footer(
+        text=f"募集ID：{message_id}"
+    )
+
+    return embed
+
+
+# ============================================================
+# 21. 募集参加ボタン
+# ============================================================
+
+class RecruitmentView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def update_participant(
+        self,
+        interaction: discord.Interaction,
+        status: str | None
+    ):
+        if interaction.message is None:
+            return await safe_ephemeral(
+                interaction,
+                "募集投稿を確認できませんでした。"
+            )
+
+        message_id = interaction.message.id
+        user_id = interaction.user.id
+
+        with connect() as conn:
+            post = conn.execute(
+                """
+                SELECT message_id
+                FROM recruitment_posts
+                WHERE message_id = ?
+                """,
+                (message_id,)
+            ).fetchone()
+
+            if post is None:
+                return await safe_ephemeral(
+                    interaction,
+                    "この募集情報はデータベースに登録されていません。"
+                )
+
+            existing = conn.execute(
+                """
+                SELECT status
+                FROM recruitment_participants
+                WHERE message_id = ?
+                AND user_id = ?
+                """,
+                (
+                    message_id,
+                    user_id
+                )
+            ).fetchone()
+
+            if status is None:
+                if existing is None:
+                    return await safe_ephemeral(
+                        interaction,
+                        "あなたはこの募集に参加していません。"
+                    )
+
+                conn.execute(
+                    """
+                    DELETE FROM recruitment_participants
+                    WHERE message_id = ?
+                    AND user_id = ?
+                    """,
+                    (
+                        message_id,
+                        user_id
+                    )
+                )
+
+                response_text = "募集への参加を辞退しました。"
+
+            else:
+                if existing is not None:
+                    conn.execute(
+                        """
+                        UPDATE recruitment_participants
+                        SET status = ?, joined_at = ?
+                        WHERE message_id = ?
+                        AND user_id = ?
+                        """,
+                        (
+                            status,
+                            now_iso(),
+                            message_id,
+                            user_id
+                        )
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO recruitment_participants (
+                            message_id,
+                            user_id,
+                            status,
+                            joined_at
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            message_id,
+                            user_id,
+                            status,
+                            now_iso()
+                        )
+                    )
+
+                if status == "regular":
+                    response_text = "通常参加として登録しました。"
+                else:
+                    response_text = "途中参加として登録しました。"
+
+        try:
+            with connect() as conn:
+                post_info = conn.execute(
+                    """
+                    SELECT *
+                    FROM recruitment_posts
+                    WHERE message_id = ?
+                    """,
+                    (message_id,)
+                ).fetchone()
+
+            if post_info is not None:
+                original_embed = (
+                    interaction.message.embeds[0]
+                    if interaction.message.embeds
+                    else None
+                )
+
+                title = (
+                    original_embed.title
+                    if original_embed and original_embed.title
+                    else "参加者募集"
+                )
+
+                description = (
+                    original_embed.description
+                    if original_embed and original_embed.description
+                    else "参加希望者はボタンを押してください。"
+                )
+
+                updated_embed = build_recruitment_embed(
+                    title,
+                    description,
+                    message_id
+                )
+
+                await interaction.message.edit(
+                    embed=updated_embed,
+                    view=RecruitmentView()
+                )
+
+        except discord.HTTPException:
+            LOG.exception(
+                "Recruitment message update failed"
+            )
+
+        await safe_ephemeral(
+            interaction,
+            response_text
+        )
+
+    @discord.ui.button(
+        label="参加する",
+        style=discord.ButtonStyle.success,
+        emoji="🙋",
+        custom_id="nexus:v52:recruit:join"
+    )
+    async def join(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await self.update_participant(
+            interaction,
+            "regular"
+        )
+
+    @discord.ui.button(
+        label="途中参加する",
+        style=discord.ButtonStyle.primary,
+        emoji="⏰",
+        custom_id="nexus:v52:recruit:late"
+    )
+    async def late_join(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await self.update_participant(
+            interaction,
+            "late"
+        )
+
+    @discord.ui.button(
+        label="辞退する",
+        style=discord.ButtonStyle.danger,
+        emoji="❌",
+        custom_id="nexus:v52:recruit:withdraw"
+    )
+    async def withdraw(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await self.update_participant(
+            interaction,
+            None
+        )
+
+
+# ============================================================
+# 22. 募集投稿とスレッドの作成
+# ============================================================
+
+async def create_recruit_thread(
+    channel: discord.TextChannel,
+    author: discord.abc.User,
+    content: str,
+    kind: str = "normal",
+    title: str | None = None
+):
+    if not isinstance(channel, discord.TextChannel):
+        return None
+
+    post_title = title or "参加者募集"
+
+    description = (
+        content.strip()
+        or "参加希望者はボタンから登録してください。"
+    )
+
+    embed = discord.Embed(
+        title=post_title,
+        description=description,
+        color=discord.Color.blurple(),
+        timestamp=datetime.now(timezone.utc)
+    )
+
+    embed.add_field(
+        name="募集作成者",
+        value=author.mention,
+        inline=False
+    )
+
+    try:
+        message = await channel.send(
+            embed=embed,
+            view=RecruitmentView(),
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+
+        with connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO recruitment_posts (
+                    message_id,
+                    guild_id,
+                    channel_id,
+                    thread_id,
+                    kind,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message.id,
+                    channel.guild.id,
+                    channel.id,
+                    None,
+                    kind,
+                    now_iso()
+                )
+            )
+
+        try:
+            thread = await message.create_thread(
+                name=f"{post_title}"[:100],
+                auto_archive_duration=1440
+            )
+
+            with connect() as conn:
+                conn.execute(
+                    """
+                    UPDATE recruitment_posts
+                    SET thread_id = ?
+                    WHERE message_id = ?
+                    """,
+                    (
+                        thread.id,
+                        message.id
+                    )
+                )
+
+            await thread.send(
+                "こちらは募集専用スレッドです。\n"
+                "参加者同士の連絡はこちらで行ってください。"
+            )
+
+        except discord.HTTPException:
+            LOG.exception(
+                "Recruitment thread creation failed"
+            )
+
+        return message
+
+    except Exception:
+        LOG.exception(
+            "Recruitment post creation failed"
+        )
+
+        return None
+
+
+# ============================================================
+# 23. カスタム募集作成モーダル
+# ============================================================
+
+class CustomRecruitModal(
+    discord.ui.Modal,
+    title="カスタム募集を作成"
+):
+
+    date_time = discord.ui.TextInput(
+        label="開催日時",
+        placeholder="例：2026-11-20 21:00",
+        max_length=16
+    )
+
+    recruit_title = discord.ui.TextInput(
+        label="募集タイトル",
+        placeholder="例：カスタム参加者募集",
+        max_length=100
+    )
+
+    details = discord.ui.TextInput(
+        label="募集内容・ルール",
+        style=discord.TextStyle.paragraph,
+        placeholder="募集人数やルールなどを入力してください。",
+        required=False,
+        max_length=1000
+    )
+
+    async def on_submit(
+        self,
+        interaction: discord.Interaction
+    ):
+        if interaction.guild is None:
+            return await safe_ephemeral(
+                interaction,
+                "サーバー内から操作してください。"
+            )
+
+        try:
+            start_time = datetime.strptime(
+                self.date_time.value.strip(),
+                "%Y-%m-%d %H:%M"
+            ).replace(
+                tzinfo=ZoneInfo("Asia/Tokyo")
+            )
+
+        except ValueError:
+            return await safe_ephemeral(
+                interaction,
+                "開催日時は「2026-11-20 21:00」の形式で入力してください。"
+            )
+
+        if start_time <= datetime.now(
+            ZoneInfo("Asia/Tokyo")
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "開催日時は現在より未来に設定してください。"
+            )
+
+        channel = interaction.guild.get_channel(
+            CUSTOM_CHANNEL_ID
+        )
+
+        if channel is None:
+            try:
+                channel = await interaction.guild.fetch_channel(
+                    CUSTOM_CHANNEL_ID
+                )
+            except discord.HTTPException:
+                channel = None
+
+        if not isinstance(
+            channel,
+            discord.TextChannel
+        ):
+            return await safe_ephemeral(
+                interaction,
+                "カスタム募集チャンネルが見つかりません。"
+            )
+
+        custom_role = discord.utils.get(
+            interaction.guild.roles,
+            name="カスタム"
+        )
+
+        role_mention = (
+            custom_role.mention
+            if custom_role is not None
+            else ""
+        )
+
+        description = (
+            f"**開催日時：** {start_time.strftime('%Y-%m-%d %H:%M')}\n"
+            f"**募集者：** {interaction.user.mention}\n\n"
+            f"{self.details.value.strip() or '詳細はスレッド内で確認してください。'}"
+        )
+
+        if custom_role is not None:
+            allowed_mentions = discord.AllowedMentions(
+                users=True,
+                roles=[custom_role],
+                everyone=False
+            )
+        else:
+            allowed_mentions = discord.AllowedMentions(
+                users=True,
+                roles=False,
+                everyone=False
+            )
+
+        try:
+            message = await channel.send(
+                content=role_mention,
+                embed=discord.Embed(
+                    title=self.recruit_title.value.strip(),
+                    description=description,
+                    color=discord.Color.purple(),
+                    timestamp=datetime.now(timezone.utc)
+                ),
+                view=RecruitmentView(),
+                allowed_mentions=allowed_mentions
+            )
+
+            with connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO recruitment_posts (
+                        message_id,
+                        guild_id,
+                        channel_id,
+                        thread_id,
+                        kind,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message.id,
+                        interaction.guild.id,
+                        channel.id,
+                        None,
+                        "custom",
+                        now_iso()
+                    )
+                )
+
+            try:
+                thread = await message.create_thread(
+                    name=self.recruit_title.value.strip()[:100],
+                    auto_archive_duration=1440
+                )
+
+                with connect() as conn:
+                    conn.execute(
+                        """
+                        UPDATE recruitment_posts
+                        SET thread_id = ?
+                        WHERE message_id = ?
+                        """,
+                        (
+                            thread.id,
+                            message.id
+                        )
+                    )
+
+                await thread.send(
+                    "こちらはカスタム募集専用スレッドです。\n"
+                    "参加者同士の連絡はこちらで行ってください。"
+                )
+
+            except discord.HTTPException:
+                LOG.exception(
+                    "Custom recruitment thread creation failed"
+                )
+
+            await log_action(
+                interaction.guild.id,
+                interaction.user.id,
+                "custom_recruit_create",
+                self.recruit_title.value.strip()
+            )
+
+            # カスタム募集が3件増えるごとに
+            # 新しい募集ボタンを設置する
+            with connect() as conn:
+                count_row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS total
+                    FROM recruitment_posts
+                    WHERE guild_id = ?
+                    AND kind = 'custom'
+                    """,
+                    (interaction.guild.id,)
+                ).fetchone()
+
+            custom_count = count_row["total"]
+
+            if custom_count % 3 == 0:
+                await channel.send(
+                    "次のカスタム募集はこちらから作成できます。",
+                    view=CustomRecruitPanelView()
+                )
+
+        except Exception:
+            LOG.exception(
+                "Custom recruitment creation failed"
+            )
+
+            return await safe_ephemeral(
+                interaction,
+                "カスタム募集の作成に失敗しました。運営に連絡してください。"
+            )
+
+        await safe_ephemeral(
+            interaction,
+            f"カスタム募集を投稿しました。\n{message.jump_url}"
+        )
+
+
+# ============================================================
+# 24. カスタム募集ボタンパネル
+# ============================================================
+
+class CustomRecruitPanelView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="カスタム募集する",
+        style=discord.ButtonStyle.primary,
+        emoji="🎮",
+        custom_id="nexus:v52:custom_recruit:create"
+    )
+    async def create_custom_recruit(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(
+            CustomRecruitModal()
+        )
+
+
+# ============================================================
+# 25. ログ・Bot本体の準備
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
+LOG = logging.getLogger("NexusLeagueBot")
+
+
+def has_admin_access(
+    interaction: discord.Interaction
+) -> bool:
+    if interaction.guild is None:
+        return False
+
+    if interaction.user.guild_permissions.administrator:
+        return True
+
+    if OPERATIONS_ROLE_ID:
+        return any(
+            role.id == OPERATIONS_ROLE_ID
+            for role in interaction.user.roles
+        )
+
+    return False
+
+
+# ============================================================
+# 26. ボイスチャンネル活動記録テーブル
+# ============================================================
+
+def init_voice_activity_table():
+    with connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS voice_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                joined_at TEXT NOT NULL,
+                left_at TEXT
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_voice_activity_guild_joined
+            ON voice_activity(guild_id, joined_at)
+            """
+        )
+
+
+# ============================================================
+# 27. Botクラス
+# ============================================================
+
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
-intents.voice_states = True
 intents.message_content = True
+intents.voice_states = True
+
 
 class NexusBot(commands.Bot):
+
     async def setup_hook(self):
-        self.add_view(RegistrationPanelView())
-        self.add_view(FaPanelView())
-        self.add_view(RolePanelView())
-        self.add_view(RecruitmentView())
-        self.add_view(RequestPanelView("team"))
-        self.add_view(RequestPanelView("matching"))
-        # Tournament views have per-tournament custom IDs and are rehydrated below.
-        with connect() as con:
-            ids = [r["id"] for r in con.execute("SELECT id FROM tournaments WHERE status='open'").fetchall()]
-        for tid in ids:
-            self.add_view(TournamentPanelView(tid))
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
-        if not self.daily_dm.is_running():
-            self.daily_dm.start()
 
-    async def on_ready(self):
-        LOG.info("Ready as %s (%s)", self.user, self.user.id if self.user else "?")
+        # DB初期化
+        init_db()
+        init_voice_activity_table()
 
-    @tasks.loop(time=time(hour=8, minute=0, tzinfo=JST))
-    async def daily_dm(self):
-        yesterday = (datetime.now(JST).date() - timedelta(days=1))
-        start = datetime.combine(yesterday, time.min, tzinfo=JST)
-        end = start + timedelta(days=1)
-        report = build_daily_report(start, end)
-        user = self.get_user(REPORT_USER_ID)
-        if user is None:
-            try:
-                user = await self.fetch_user(REPORT_USER_ID)
-            except discord.HTTPException:
-                LOG.exception("Report recipient fetch failed")
-                return
+        # 永続ボタン登録
+        self.add_view(
+            RegistrationPanelView()
+        )
+
+        self.add_view(
+            FaPanelView()
+        )
+
+        self.add_view(
+            TeamPanelView()
+        )
+
+        self.add_view(
+            MatchingPanelView()
+        )
+
+        self.add_view(
+            CustomRecruitPanelView()
+        )
+
+        self.add_view(
+            RecruitmentView()
+        )
+
+        self.add_view(
+            RolePanelView()
+        )
+
+        # 作成済み大会のボタンを復元
+        with connect() as conn:
+            tournaments = conn.execute(
+                """
+                SELECT id
+                FROM tournaments
+                WHERE status = 'open'
+                """
+            ).fetchall()
+
+        for tournament in tournaments:
+            self.add_view(
+                TournamentPanelView(
+                    tournament["id"]
+                )
+            )
+
+        # スラッシュコマンド同期
         try:
-            await user.send(report)
-        except discord.HTTPException:
-            LOG.exception("Daily report DM failed")
+            synced = await self.tree.sync()
 
-bot = NexusBot(command_prefix="!", intents=intents)
+            LOG.info(
+                "Slash commands synced: %s",
+                len(synced)
+            )
 
-@bot.event
-async def on_message(message: discord.Message):
-    if not message.author.bot and message.guild:
-        kind = next((k for k, cid in RECRUIT_CHANNELS.items() if cid == message.channel.id), None)
-        if kind:
-            try:
-                thread = await create_recruit_thread(message, kind)
-                role_name = ROLE_MENTION_NAMES[kind]
-                role = discord.utils.get(message.guild.roles, name=role_name)
-                mention = role.mention if role else ""
-                embed = discord.Embed(title=f"募集：{RECRUIT_KIND_LABELS[kind]}",
-                                      description=message.content[:3500] or "募集内容なし",
-                                      color=discord.Color.green())
-                embed.add_field(name="募集主", value=message.author.mention)
-                embed.add_field(name="通常参加", value="なし", inline=True)
-                embed.add_field(name="途中参加", value="なし", inline=True)
-                panel = await message.reply(content=f"{mention} 募集スレッド: {thread.mention}",
-                    embed=embed, view=RecruitmentView(), mention_author=False,
-                    allowed_mentions=discord.AllowedMentions(roles=[role] if role else [], users=True))
-                with connect() as con:
-                    con.execute("UPDATE recruitment_posts SET message_id=? WHERE thread_id=?", (panel.id, thread.id))
-            except discord.HTTPException:
-                LOG.exception("Auto recruitment failed for message %s", message.id)
+        except Exception:
+            LOG.exception(
+                "Slash command sync failed"
+            )
+
+
+bot = NexusBot(
+    command_prefix="!",
+    intents=intents
+)
+
+
+# ============================================================
+# 28. ロール付与パネル
+# ============================================================
+
+class RolePanelView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        role_names = [
+            "TOP",
+            "JGL",
+            "MID",
+            "ADC",
+            "SUP"
+        ]
+
+        for role_name in role_names:
+            button = discord.ui.Button(
+                label=role_name,
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"nexus:v52:role:{role_name}"
+            )
+
+            async def callback(
+                interaction: discord.Interaction,
+                selected_role=role_name
+            ):
+                if interaction.guild is None:
+                    return await safe_ephemeral(
+                        interaction,
+                        "サーバー内から操作してください。"
+                    )
+
+                role = discord.utils.get(
+                    interaction.guild.roles,
+                    name=selected_role
+                )
+
+                if role is None:
+                    return await safe_ephemeral(
+                        interaction,
+                        f"「{selected_role}」ロールが見つかりません。"
+                    )
+
+                member = interaction.guild.get_member(
+                    interaction.user.id
+                )
+
+                if member is None:
+                    return await safe_ephemeral(
+                        interaction,
+                        "メンバー情報を取得できませんでした。"
+                    )
+
                 try:
-                    await message.reply("募集スレッドの作成に失敗しました。Bot権限を確認してください。", mention_author=False)
+                    if role in member.roles:
+                        await member.remove_roles(
+                            role,
+                            reason="Nexus role panel"
+                        )
+
+                        result = (
+                            f"「{selected_role}」ロールを解除しました。"
+                        )
+
+                    else:
+                        await member.add_roles(
+                            role,
+                            reason="Nexus role panel"
+                        )
+
+                        result = (
+                            f"「{selected_role}」ロールを付与しました。"
+                        )
+
+                    await safe_ephemeral(
+                        interaction,
+                        result
+                    )
+
+                except discord.Forbidden:
+                    await safe_ephemeral(
+                        interaction,
+                        "ロールを変更できません。Botのロール位置と権限を確認してください。"
+                    )
+
                 except discord.HTTPException:
-                    pass
-    await bot.process_commands(message)
+                    LOG.exception(
+                        "Role update failed"
+                    )
+
+                    await safe_ephemeral(
+                        interaction,
+                        "ロール変更に失敗しました。"
+                    )
+
+            button.callback = callback
+            self.add_item(button)
+
+
+# ============================================================
+# 29. ボイス活動記録
+# ============================================================
 
 @bot.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState
+):
+    if member.bot:
+        return
+
     if before.channel == after.channel:
         return
-    ts = now_iso()
-    with connect() as con:
-        if before.channel:
-            row = con.execute("""SELECT id,joined_at FROM vc_sessions WHERE guild_id=? AND user_id=?
-                AND channel_id=? AND left_at IS NULL ORDER BY id DESC LIMIT 1""",
-                (member.guild.id, member.id, before.channel.id)).fetchone()
-            if row:
-                con.execute("UPDATE vc_sessions SET left_at=? WHERE id=?", (ts, row["id"]))
-            con.execute("INSERT INTO vc_events(guild_id,user_id,channel_id,event,occurred_at) VALUES(?,?,?,?,?)",
-                        (member.guild.id, member.id, before.channel.id, "leave", ts))
-        if after.channel:
-            con.execute("INSERT INTO vc_sessions(guild_id,user_id,channel_id,joined_at) VALUES(?,?,?,?)",
-                        (member.guild.id, member.id, after.channel.id, ts))
-            con.execute("INSERT INTO vc_events(guild_id,user_id,channel_id,event,occurred_at) VALUES(?,?,?,?,?)",
-                        (member.guild.id, member.id, after.channel.id, "join", ts))
 
-# ---------------- Reporting helpers ----------------
-def build_daily_report(start: datetime, end: datetime) -> str:
-    a, b = start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
-    with connect() as con:
-        joins = con.execute("""SELECT COUNT(*) n,COUNT(DISTINCT user_id) users FROM vc_events
-            WHERE event='join' AND occurred_at>=? AND occurred_at<?""", (a,b)).fetchone()
-        sessions = con.execute("""SELECT user_id,joined_at,left_at FROM vc_sessions
-            WHERE joined_at<? AND (left_at IS NULL OR left_at>?)""", (b,a)).fetchall()
-        recruit = con.execute("SELECT COUNT(*) n FROM recruitment_posts WHERE created_at>=? AND created_at<?",
-                              (a,b)).fetchone()["n"]
-        top = con.execute("""SELECT p.kind,COUNT(*) n FROM recruitment_posts p
-            WHERE p.created_at>=? AND p.created_at<? GROUP BY p.kind ORDER BY n DESC LIMIT 3""", (a,b)).fetchall()
-    seconds_by_user = {}
-    for s in sessions:
-        joined = max(datetime.fromisoformat(s["joined_at"]), start.astimezone(timezone.utc))
-        left = min(datetime.fromisoformat(s["left_at"]) if s["left_at"] else end.astimezone(timezone.utc),
-                   end.astimezone(timezone.utc))
-        seconds_by_user[s["user_id"]] = seconds_by_user.get(s["user_id"], 0) + max(0, (left-joined).total_seconds())
-    total_hours = sum(seconds_by_user.values()) / 3600
-    top_text = "\n".join(f"{RECRUIT_KIND_LABELS.get(r['kind'],r['kind'])}: {r['n']}回" for r in top) or "なし"
-    return (f"📊 **Nexus League 昨日の活動報告**（{start.strftime('%Y-%m-%d')} JST）\n"
-            f"VC入室回数: **{joins['n']}回**（利用者 {joins['users']}人）\n"
-            f"VC利用時間合計: **{total_hours:.1f}時間**\n"
-            f"募集使用回数: **{recruit}回**\n募集使用TOP3:\n{top_text}\n"
-            f"VC利用者数: **{len(seconds_by_user)}人**")
+    current_time = now_iso()
 
-def report_for_period(days: int) -> str:
-    end = datetime.now(JST)
-    start = end - timedelta(days=days)
-    a, b = start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
-    with connect() as con:
-        ev = con.execute("SELECT COUNT(*) n FROM vc_events WHERE event='join' AND occurred_at>=? AND occurred_at<?",
-                         (a,b)).fetchone()["n"]
-        rec = con.execute("SELECT COUNT(*) n FROM recruitment_posts WHERE created_at>=? AND created_at<?",
-                          (a,b)).fetchone()["n"]
-        sessions = con.execute("SELECT joined_at,left_at FROM vc_sessions WHERE joined_at<? AND (left_at IS NULL OR left_at>?)",
-                               (b,a)).fetchall()
-    secs = 0
-    for s in sessions:
-        j = max(datetime.fromisoformat(s["joined_at"]), start.astimezone(timezone.utc))
-        l = min(datetime.fromisoformat(s["left_at"]) if s["left_at"] else end.astimezone(timezone.utc),
-                end.astimezone(timezone.utc))
-        secs += max(0, (l-j).total_seconds())
-    return f"過去{days}日: VC入室 {ev}回 / VC利用 {secs/3600:.1f}時間 / 募集 {rec}回"
+    try:
+        with connect() as conn:
 
-# ---------------- Slash commands ----------------
-@bot.tree.command(name="setup", description="プレイヤー登録パネルを設置")
-@is_admin()
-async def setup_cmd(interaction: discord.Interaction):
-    await interaction.channel.send(embed=discord.Embed(title="Nexus League｜プレイヤー登録",
-        description="ボタンからランクを選択し、登録情報を運営チャンネルへ送信してください。Botは登録情報を保存しません。"),
-        view=RegistrationPanelView())
-    log_action(interaction.guild_id, interaction.user.id, "setup")
-    await safe_ephemeral(interaction, "登録パネルを設置しました。")
+            # 以前のVC滞在記録を終了
+            if before.channel is not None:
+                active = conn.execute(
+                    """
+                    SELECT id
+                    FROM voice_activity
+                    WHERE guild_id = ?
+                    AND user_id = ?
+                    AND left_at IS NULL
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (
+                        member.guild.id,
+                        member.id
+                    )
+                ).fetchone()
 
-@bot.tree.command(name="fa_card", description="FA選手カード作成パネルを設置")
-@is_admin()
-async def fa_card_cmd(interaction: discord.Interaction):
-    await interaction.channel.send(embed=discord.Embed(title="FA選手カード", description="ボタンからカードを投稿できます。"),
-                                   view=FaPanelView())
-    await safe_ephemeral(interaction, "FAカードパネルを設置しました。")
+                if active is not None:
+                    conn.execute(
+                        """
+                        UPDATE voice_activity
+                        SET left_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            current_time,
+                            active["id"]
+                        )
+                    )
 
-@bot.tree.command(name="recruit_panel", description="カスタム募集パネルを設置")
-@is_admin()
-async def recruit_panel_cmd(interaction: discord.Interaction):
-    channel = interaction.guild.get_channel(CUSTOM_CHANNEL_ID) if interaction.guild else None
-    if not isinstance(channel, discord.TextChannel):
-        return await safe_ephemeral(interaction, f"カスタム募集チャンネルが見つかりません（{CUSTOM_CHANNEL_ID}）。")
-    await channel.send(embed=discord.Embed(title="カスタム募集", description="このチャンネルで募集内容を投稿するとスレッドを作成します。"))
-    await safe_ephemeral(interaction, "カスタム募集案内を設置しました。")
+            # 新しいVC滞在記録を開始
+            if after.channel is not None:
+                conn.execute(
+                    """
+                    INSERT INTO voice_activity (
+                        guild_id,
+                        user_id,
+                        channel_id,
+                        joined_at,
+                        left_at
+                    )
+                    VALUES (?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        member.guild.id,
+                        member.id,
+                        after.channel.id,
+                        current_time
+                    )
+                )
 
-@bot.tree.command(name="team_panel", description="チーム申請パネルを設置")
-@is_admin()
-async def team_panel_cmd(interaction: discord.Interaction):
-    view = RequestPanelView("team")
-    await interaction.channel.send(embed=discord.Embed(title="チーム管理", description="結成・解散申請は非公開チャンネルで運営が確認します。"), view=view)
-    await safe_ephemeral(interaction, "チームパネルを設置しました。")
+        await log_action(
+            member.guild.id,
+            member.id,
+            "voice_state_update",
+            (
+                f"退出：{before.channel.name if before.channel else 'なし'}"
+                f"｜参加：{after.channel.name if after.channel else 'なし'}"
+            )
+        )
 
-@bot.tree.command(name="matching_panel", description="マッチング受付パネルを設置")
-@is_admin()
-async def matching_panel_cmd(interaction: discord.Interaction):
-    await interaction.channel.send(embed=discord.Embed(title="マッチング受付", description="Botは希望受付のみ行います。実際のマッチングは別AIが担当します。"),
-                                   view=RequestPanelView("matching"))
-    await safe_ephemeral(interaction, "マッチングパネルを設置しました。")
+    except Exception:
+        LOG.exception(
+            "Voice activity recording failed"
+        )
 
-@bot.tree.command(name="role_panel", description="4種類のロールパネルを設置")
-@is_admin()
-async def role_panel_cmd(interaction: discord.Interaction):
-    await interaction.channel.send(embed=discord.Embed(title="ロール選択", description="ボタンでロールを付与・解除できます。右端の解除ボタンは対象4ロールのみを外します。"),
-                                   view=RolePanelView())
-    await safe_ephemeral(interaction, "ロールパネルを設置しました。")
 
-@bot.tree.command(name="tournament", description="大会作成モーダルを開く")
-@is_admin()
-async def tournament_cmd(interaction: discord.Interaction):
-    await interaction.response.send_modal(TournamentCreateModal())
+# ============================================================
+# 30. 通常募集チャンネルの自動募集
+# ============================================================
 
-@bot.tree.command(name="daily_report", description="昨日の活動報告を表示")
-@is_admin()
-async def daily_report_cmd(interaction: discord.Interaction):
-    today = datetime.now(JST).date()
-    start = datetime.combine(today-timedelta(days=1), time.min, tzinfo=JST)
-    await safe_ephemeral(interaction, build_daily_report(start, start+timedelta(days=1)))
+@bot.event
+async def on_message(
+    message: discord.Message
+):
+    if message.author.bot:
+        return
 
-@bot.tree.command(name="activity_stats", description="指定期間の活動統計")
-@app_commands.describe(days="集計日数（1〜90）")
-@is_admin()
-async def activity_stats_cmd(interaction: discord.Interaction, days: app_commands.Range[int,1,90]=7):
-    await safe_ephemeral(interaction, report_for_period(days))
+    if message.guild is None:
+        return
 
-@bot.tree.command(name="bot_status", description="Bot稼働状況")
-@is_admin()
-async def bot_status_cmd(interaction: discord.Interaction):
-    with connect() as con:
-        counts = {t: con.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"]
-                  for t in ("recruitment_posts","recruitment_participants","vc_sessions","tournaments")}
-    latency = round(bot.latency*1000)
-    await safe_ephemeral(interaction, f"稼働中｜Ping {latency}ms\nDB: {counts}")
+    channel_kind = None
 
-@bot.tree.command(name="admin_panel", description="運営向け機能一覧")
-@is_admin()
-async def admin_panel_cmd(interaction: discord.Interaction):
-    await safe_ephemeral(interaction, "運営コマンド: /setup /fa_card /recruit_panel /team_panel /matching_panel /role_panel /tournament /daily_report /activity_stats /bot_status /admin_panel /operation_logs")
+    for kind, channel_id in RECRUIT_CHANNELS.items():
+        if message.channel.id == channel_id:
+            channel_kind = kind
+            break
 
-@bot.tree.command(name="operation_logs", description="直近の運営ログ")
-@is_admin()
-async def operation_logs_cmd(interaction: discord.Interaction):
-    with connect() as con:
-        rows = con.execute("SELECT actor_id,action,detail,created_at FROM operation_logs ORDER BY id DESC LIMIT 15").fetchall()
-    desc = "\n".join(f"{r['created_at'][:16]} <@{r['actor_id'] or 0}> {r['action']} {r['detail']}" for r in rows) or "ログはありません。"
-    await safe_ephemeral(interaction, desc[:1900])
+    if channel_kind is not None:
+        if isinstance(
+            message.channel,
+            discord.TextChannel
+        ):
+            await create_recruit_thread(
+                channel=message.channel,
+                author=message.author,
+                content=message.content,
+                kind=channel_kind,
+                title=f"{channel_kind.upper()} 募集"
+            )
+
+    await bot.process_commands(message)
+
+
+# ============================================================
+# 31. 日次活動レポート作成
+# ============================================================
+
+async def build_daily_report(
+    guild: discord.Guild,
+    target_date: date | None = None
+) -> str:
+
+    if target_date is None:
+        target_date = datetime.now(
+            ZoneInfo("Asia/Tokyo")
+        ).date()
+
+    day_start = datetime.combine(
+        target_date,
+        datetime.min.time()
+    ).replace(
+        tzinfo=ZoneInfo("Asia/Tokyo")
+    )
+
+    day_end = day_start + timedelta(days=1)
+
+    start_text = day_start.isoformat()
+    end_text = day_end.isoformat()
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                user_id,
+                SUM(
+                    (
+                        julianday(
+                            CASE
+                                WHEN left_at IS NULL THEN ?
+                                ELSE left_at
+                            END
+                        ) - julianday(joined_at)
+                    ) * 1440
+                ) AS total_minutes
+            FROM voice_activity
+            WHERE guild_id = ?
+            AND joined_at < ?
+            AND (
+                left_at IS NULL
+                OR left_at > ?
+            )
+            GROUP BY user_id
+            ORDER BY total_minutes DESC
+            LIMIT 15
+            """,
+            (
+                now_iso(),
+                guild.id,
+                end_text,
+                start_text
+            )
+        ).fetchall()
+
+        recruit_row = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM recruitment_posts
+            WHERE guild_id = ?
+            AND created_at >= ?
+            AND created_at < ?
+            """,
+            (
+                guild.id,
+                start_text,
+                end_text
+            )
+        ).fetchone()
+
+        custom_row = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM recruitment_posts
+            WHERE guild_id = ?
+            AND kind = 'custom'
+            AND created_at >= ?
+            AND created_at < ?
+            """,
+            (
+                guild.id,
+                start_text,
+                end_text
+            )
+        ).fetchone()
+
+    lines = [
+        f"📊 **Nexus League 日次活動レポート**",
+        f"対象日：{target_date.isoformat()}",
+        "",
+        f"募集投稿数：{recruit_row['total']}件",
+        f"カスタム募集数：{custom_row['total']}件",
+        "",
+        "🎧 **VC活動時間ランキング**"
+    ]
+
+    if rows:
+        for index, row in enumerate(
+            rows,
+            start=1
+        ):
+            member = guild.get_member(
+                row["user_id"]
+            )
+
+            member_name = (
+                member.display_name
+                if member
+                else f"ユーザーID：{row['user_id']}"
+            )
+
+            minutes = max(
+                0,
+                int(row["total_minutes"] or 0)
+            )
+
+            hours = minutes // 60
+            remaining = minutes % 60
+
+            lines.append(
+                f"{index}. {member_name}：{hours}時間{remaining}分"
+            )
+    else:
+        lines.append(
+            "この日のVC活動記録はありません。"
+        )
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# 32. 指定期間の活動レポート
+# ============================================================
+
+async def report_for_period(
+    guild: discord.Guild,
+    days: int = 7
+) -> str:
+
+    now = datetime.now(
+        ZoneInfo("Asia/Tokyo")
+    )
+
+    start = now - timedelta(days=days)
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                user_id,
+                SUM(
+                    (
+                        julianday(
+                            CASE
+                                WHEN left_at IS NULL THEN ?
+                                ELSE left_at
+                            END
+                        ) - julianday(joined_at)
+                    ) * 1440
+                ) AS total_minutes
+            FROM voice_activity
+            WHERE guild_id = ?
+            AND joined_at >= ?
+            GROUP BY user_id
+            ORDER BY total_minutes DESC
+            LIMIT 20
+            """,
+            (
+                now.isoformat(),
+                guild.id,
+                start.isoformat()
+            )
+        ).fetchall()
+
+        recruit_row = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM recruitment_posts
+            WHERE guild_id = ?
+            AND created_at >= ?
+            """,
+            (
+                guild.id,
+                start.isoformat()
+            )
+        ).fetchone()
+
+    lines = [
+        f"📊 **過去{days}日間の活動レポート**",
+        f"募集投稿数：{recruit_row['total']}件",
+        "",
+        "🎧 **VC活動時間ランキング**"
+    ]
+
+    for index, row in enumerate(
+        rows,
+        start=1
+    ):
+        member = guild.get_member(
+            row["user_id"]
+        )
+
+        name = (
+            member.display_name
+            if member
+            else f"ユーザーID：{row['user_id']}"
+        )
+
+        minutes = max(
+            0,
+            int(row["total_minutes"] or 0)
+        )
+
+        lines.append(
+            f"{index}. {name}："
+            f"{minutes // 60}時間{minutes % 60}分"
+        )
+
+    if not rows:
+        lines.append(
+            "活動記録はありません。"
+        )
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# 33. 毎日9時の日次レポート
+# ============================================================
+
+@tasks.loop(
+    time=time(
+        hour=9,
+        minute=0,
+        tzinfo=ZoneInfo("Asia/Tokyo")
+    )
+)
+async def daily_dm():
+
+    for guild in bot.guilds:
+        try:
+            report = await build_daily_report(
+                guild
+            )
+
+            user = bot.get_user(
+                REPORT_USER_ID
+            )
+
+            if user is None:
+                try:
+                    user = await bot.fetch_user(
+                        REPORT_USER_ID
+                    )
+                except discord.HTTPException:
+                    user = None
+
+            if user is not None:
+                await user.send(report)
+
+        except Exception:
+            LOG.exception(
+                "Daily report delivery failed"
+            )
+
+
+@daily_dm.before_loop
+async def before_daily_dm():
+    await bot.wait_until_ready()
+
+
+# ============================================================
+# 34. Bot起動イベント
+# ============================================================
+
+@bot.event
+async def on_ready():
+
+    LOG.info(
+        "Nexus League Bot logged in as %s",
+        bot.user
+    )
+
+    if not daily_dm.is_running():
+        daily_dm.start()
+
+
+# ============================================================
+# 35. 管理者用：初期パネル設置
+# ============================================================
+
+@bot.tree.command(
+    name="setup",
+    description="プレイヤー登録パネルを設置します"
+)
+async def setup_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel
+    ):
+        return await safe_ephemeral(
+            interaction,
+            "テキストチャンネルで実行してください。"
+        )
+
+    embed = discord.Embed(
+        title="Nexus League｜プレイヤー登録",
+        description=(
+            "下のボタンからプレイヤー登録を行ってください。\n\n"
+            "1. プレイヤー登録を押す\n"
+            "2. 最高ランクを選択する\n"
+            "3. Riot ID・ロール・自己PRを入力する\n"
+            "4. 登録申請を送信する\n\n"
+            "登録情報は運営チャンネルに送信されます。"
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await interaction.channel.send(
+        embed=embed,
+        view=RegistrationPanelView()
+    )
+
+    await safe_ephemeral(
+        interaction,
+        "プレイヤー登録パネルを設置しました。"
+    )
+
+
+# ============================================================
+# 36. 管理者用：FAカード
+# ============================================================
+
+@bot.tree.command(
+    name="fa_card",
+    description="FA選手カードを作成します"
+)
+async def fa_card_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    await interaction.response.send_modal(
+        FaModal()
+    )
+
+
+# ============================================================
+# 37. 管理者用：カスタム募集パネル
+# ============================================================
+
+@bot.tree.command(
+    name="recruit_panel",
+    description="カスタム募集ボタンを設置します"
+)
+async def recruit_panel_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if interaction.guild is None:
+        return await safe_ephemeral(
+            interaction,
+            "サーバー内から実行してください。"
+        )
+
+    channel = interaction.guild.get_channel(
+        CUSTOM_CHANNEL_ID
+    )
+
+    if channel is None:
+        try:
+            channel = await interaction.guild.fetch_channel(
+                CUSTOM_CHANNEL_ID
+            )
+        except discord.HTTPException:
+            channel = None
+
+    if not isinstance(
+        channel,
+        discord.TextChannel
+    ):
+        return await safe_ephemeral(
+            interaction,
+            "カスタム募集チャンネルが見つかりません。"
+        )
+
+    await channel.send(
+        "カスタム募集を作成する場合は、下のボタンを押してください。",
+        view=CustomRecruitPanelView()
+    )
+
+    await safe_ephemeral(
+        interaction,
+        f"カスタム募集パネルを設置しました：{channel.mention}"
+    )
+
+
+# ============================================================
+# 38. 管理者用：チームパネル
+# ============================================================
+
+@bot.tree.command(
+    name="team_panel",
+    description="チーム結成・解散パネルを設置します"
+)
+async def team_panel_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel
+    ):
+        return await safe_ephemeral(
+            interaction,
+            "テキストチャンネルで実行してください。"
+        )
+
+    embed = discord.Embed(
+        title="🛡️ チーム管理",
+        description=(
+            "チームの結成・解散申請はこちらから行えます。\n\n"
+            "チーム結成：新しいチームの申請\n"
+            "チーム解散：既存チームの解散申請"
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await interaction.channel.send(
+        embed=embed,
+        view=TeamPanelView()
+    )
+
+    await safe_ephemeral(
+        interaction,
+        "チームパネルを設置しました。"
+    )
+
+
+# ============================================================
+# 39. 管理者用：マッチングパネル
+# ============================================================
+
+@bot.tree.command(
+    name="matching_panel",
+    description="マッチング希望パネルを設置します"
+)
+async def matching_panel_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel
+    ):
+        return await safe_ephemeral(
+            interaction,
+            "テキストチャンネルで実行してください。"
+        )
+
+    embed = discord.Embed(
+        title="🤝 マッチング希望",
+        description=(
+            "チーム加入やメンバー募集を希望する方は、"
+            "下のボタンから申請してください。"
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await interaction.channel.send(
+        embed=embed,
+        view=MatchingPanelView()
+    )
+
+    await safe_ephemeral(
+        interaction,
+        "マッチングパネルを設置しました。"
+    )
+
+
+# ============================================================
+# 40. 管理者用：ロールパネル
+# ============================================================
+
+@bot.tree.command(
+    name="role_panel",
+    description="ロール選択パネルを設置します"
+)
+async def role_panel_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if not isinstance(
+        interaction.channel,
+        discord.TextChannel
+    ):
+        return await safe_ephemeral(
+            interaction,
+            "テキストチャンネルで実行してください。"
+        )
+
+    embed = discord.Embed(
+        title="🎮 ロール選択",
+        description=(
+            "希望するロールのボタンを押してください。\n"
+            "もう一度押すとロールを解除できます。"
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await interaction.channel.send(
+        embed=embed,
+        view=RolePanelView()
+    )
+
+    await safe_ephemeral(
+        interaction,
+        "ロールパネルを設置しました。"
+    )
+
+
+# ============================================================
+# 41. 管理者用：大会作成
+# ============================================================
+
+@bot.tree.command(
+    name="tournament",
+    description="チーム対抗大会を作成します"
+)
+async def tournament_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    await interaction.response.send_modal(
+        TournamentCreateModal()
+    )
+
+
+# ============================================================
+# 42. 管理者用：日次レポート
+# ============================================================
+
+@bot.tree.command(
+    name="daily_report",
+    description="本日の活動レポートを表示します"
+)
+async def daily_report_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if interaction.guild is None:
+        return await safe_ephemeral(
+            interaction,
+            "サーバー内から実行してください。"
+        )
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    report = await build_daily_report(
+        interaction.guild
+    )
+
+    await interaction.followup.send(
+        report,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# 43. 管理者用：活動統計
+# ============================================================
+
+@bot.tree.command(
+    name="activity_stats",
+    description="過去の活動統計を表示します"
+)
+@app_commands.describe(
+    days="集計する日数（1～90日）"
+)
+async def activity_stats_command(
+    interaction: discord.Interaction,
+    days: app_commands.Range[int, 1, 90] = 7
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    if interaction.guild is None:
+        return await safe_ephemeral(
+            interaction,
+            "サーバー内から実行してください。"
+        )
+
+    await interaction.response.defer(
+        ephemeral=True
+    )
+
+    report = await report_for_period(
+        interaction.guild,
+        days
+    )
+
+    await interaction.followup.send(
+        report,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# 44. Bot稼働状況
+# ============================================================
+
+@bot.tree.command(
+    name="bot_status",
+    description="Botの稼働状況を確認します"
+)
+async def bot_status_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    latency = round(
+        bot.latency * 1000
+    )
+
+    embed = discord.Embed(
+        title="🤖 Nexus League Bot 稼働状況",
+        color=discord.Color.green()
+    )
+
+    embed.add_field(
+        name="状態",
+        value="オンライン",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Ping",
+        value=f"{latency}ms",
+        inline=True
+    )
+
+    embed.add_field(
+        name="サーバー数",
+        value=f"{len(bot.guilds)}",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Discord.py",
+        value=discord.__version__,
+        inline=True
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# 45. 管理者パネル
+# ============================================================
+
+@bot.tree.command(
+    name="admin_panel",
+    description="管理者向けコマンド一覧を表示します"
+)
+async def admin_panel_command(
+    interaction: discord.Interaction
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    embed = discord.Embed(
+        title="⚙️ Nexus League 管理者パネル",
+        description=(
+            "**パネル設置**\n"
+            "`/setup` プレイヤー登録\n"
+            "`/recruit_panel` カスタム募集\n"
+            "`/team_panel` チーム結成・解散\n"
+            "`/matching_panel` マッチング希望\n"
+            "`/role_panel` ロール選択\n\n"
+            "**大会管理**\n"
+            "`/tournament` 大会作成\n\n"
+            "**レポート・状態確認**\n"
+            "`/daily_report` 日次レポート\n"
+            "`/activity_stats` 活動統計\n"
+            "`/bot_status` Bot稼働状況\n"
+            "`/operation_logs` 操作ログ"
+        ),
+        color=discord.Color.blurple()
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# 46. 操作ログ表示
+# ============================================================
+
+@bot.tree.command(
+    name="operation_logs",
+    description="Botの操作ログを表示します"
+)
+@app_commands.describe(
+    limit="表示件数（1～20件）"
+)
+async def operation_logs_command(
+    interaction: discord.Interaction,
+    limit: app_commands.Range[int, 1, 20] = 10
+):
+    if not has_admin_access(interaction):
+        return await safe_ephemeral(
+            interaction,
+            "このコマンドは管理者専用です。"
+        )
+
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM operation_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,)
+        ).fetchall()
+
+    if not rows:
+        return await safe_ephemeral(
+            interaction,
+            "操作ログはまだありません。"
+        )
+
+    lines = []
+
+    for row in rows:
+        lines.append(
+            f"**{row['action']}**\n"
+            f"ユーザーID：{row['user_id']}\n"
+            f"詳細：{row['detail']}\n"
+            f"日時：{row['created_at']}"
+        )
+
+    embed = discord.Embed(
+        title="📋 操作ログ",
+        description="\n\n".join(lines)[:4000],
+        color=discord.Color.dark_grey()
+    )
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
+
+
+# ============================================================
+# 47. スラッシュコマンド共通エラー処理
+# ============================================================
 
 @bot.tree.error
-async def app_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.MissingPermissions):
-        msg = "このコマンドはサーバー管理者のみ実行できます。"
-    else:
-        LOG.exception("Application command failed", exc_info=error)
-        msg = "コマンド実行中にエラーが発生しました。Botログを確認してください。"
-    await safe_ephemeral(interaction, msg)
+async def on_app_command_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError
+):
+    LOG.exception(
+        "Application command error",
+        exc_info=error
+    )
 
-# ---------------- HTTP health endpoint (Render) ----------------
-async def health(_request):
-    return web.Response(text="Nexus League Bot v5 is running", status=200)
+    message = (
+        "コマンドの実行中にエラーが発生しました。"
+        "運営に連絡してください。"
+    )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                message,
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                message,
+                ephemeral=True
+            )
+
+    except discord.HTTPException:
+        LOG.exception(
+            "Could not send command error response"
+        )
+
+
+# ============================================================
+# 48. Render用ヘルスチェック
+# ============================================================
+
+async def health_check(request):
+    return web.Response(
+        text="Nexus League Bot is running.",
+        status=200
+    )
+
 
 async def start_health_server():
+
     app = web.Application()
-    app.router.add_get("/", health)
-    app.router.add_get("/health", health)
+
+    app.router.add_get(
+        "/",
+        health_check
+    )
+
+    app.router.add_get(
+        "/health",
+        health_check
+    )
+
     runner = web.AppRunner(app)
+
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
+
+    port = int(
+        os.getenv("PORT", "10000")
+    )
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        port
+    )
+
     await site.start()
-    LOG.info("Health server listening on %s", PORT)
+
+    LOG.info(
+        "Health server started on port %s",
+        port
+    )
+
+    return runner
+
+
+# ============================================================
+# 49. Bot起動処理
+# ============================================================
 
 async def main():
-    if not TOKEN:
-        raise RuntimeError("DISCORD_TOKEN environment variable is required")
-    init_db()
-    await start_health_server()
-    async with bot:
-        await bot.start(TOKEN)
+
+    token = os.getenv(
+        "DISCORD_TOKEN"
+    )
+
+    if not token:
+        raise RuntimeError(
+            "環境変数 DISCORD_TOKEN が設定されていません。"
+        )
+
+    health_runner = await start_health_server()
+
+    try:
+        await bot.start(token)
+
+    finally:
+        await health_runner.cleanup()
+        await bot.close()
+
+
+# ============================================================
+# 50. 実行
+# ============================================================
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+        LOG.info(
+            "Nexus League Bot stopped."
+        )
