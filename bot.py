@@ -292,7 +292,14 @@ class NexusBot(commands.Bot):
 
         guild = discord.Object(id=GUILD_ID)
 
+        # 古いグローバルコマンドを削除し、現在のコマンド定義は保持する
+        global_commands = self.tree.get_commands()
+        self.tree.clear_commands(guild=None)
         await self.tree.sync()
+        for command in global_commands:
+            self.tree.add_command(command)
+
+        # このBOTを導入しているサーバーにだけコマンドを登録
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
 
@@ -2920,10 +2927,10 @@ async def setup_role_panel(
         title="ロール選択",
         description=(
             "希望するロールを選択してください。\n\n"
-            "🎮 **通常**\n"
+            "🎮 **ノーマル**\n"
+            "💎 **ランク**\n"
             "🛠️ **カスタム**\n"
-            "🏆 **大会**\n"
-            "💎 **ランク**\n\n"
+            "🏆 **大会**\n\n"
             "ロールは1つずつ選択できます。\n"
             "別のロールを選択すると、以前の選択対象ロールは外れます。\n\n"
             "🗑️ **全てのロールを外す**\n"
