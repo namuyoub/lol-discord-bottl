@@ -218,7 +218,7 @@ def decode_hidden_user_id(footer_text: str) -> Optional[int]:
         )
         if len(bits) == 64:
             return int(bits, 2)
-    match = re.search(r"Creator ID: (\\d+)", footer_text)
+    match = re.search(r"Creator ID: (\d+)", footer_text)
     return int(match.group(1)) if match else None
 
 
@@ -2387,7 +2387,9 @@ class CustomRecruitmentView(discord.ui.View):
 
         await message.edit(embed=embed)
 
-        await interaction.response.send_message("参加状況を更新しました。", ephemeral=True),
+        await interaction.response.send_message(
+            "参加状況を更新しました。",
+            ephemeral=True,
         )
 
     async def join_callback(
