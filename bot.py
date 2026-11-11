@@ -1378,370 +1378,172 @@ async def tournament_create(
 # ============================================================
 
 # ============================================================
-# 自分の専用チャンネルを探す
+# 非公開チャンネル作成（チーム結成・チーム解散）
 # ============================================================
 
-def get_user_team_channels(
-    guild: discord.Guild,
-    user_id: int,
+async def create_private_team_channel(
+    interaction: discord.Interaction,
+    channel_name: str,
+    channel_type: str,
 ):
-    category = guild.get_channel(
-        TEAM_APPLICATION_CATEGORY_ID
+    guild = interaction.guild
+
+    if guild is None:
+        await interaction.response.send_message(
+            "サーバー内で使用してください。",
+            ephemeral=True,
+        )
+        return
+
+    # 同じ本人が同じ用途のチャンネルを既に作っていないか確認
+    for channel in guild.text_channels:
+        topic = channel.topic or ""
+        if (
+            f"Team Owner ID: {interaction.user.id}" in topic
+            and f"Team Type: {channel_type}" in topic
+        ):
+            await interaction.response.send_message(
+                f"すでに作成されています：{channel.mention}",
+                ephemeral=True,
+            )
+            return
+
+    bot_member = guild.me
+    if bot_member is None and bot.user is not None:
+        bot_member = guild.get_member(bot.user.id)
+
+    if bot_member is None:
+        await interaction.response.send_message(
+            "BOTのサーバー情報を取得できませんでした。",
+            ephemeral=True,
+        )
+        return
+
+    operator = guild.get_member(OWNER_ID)
+    if operator is None:
+        try:
+            operator = await guild.fetch_member(OWNER_ID)
+        except discord.HTTPException:
+            operator = None
+
+    if operator is None:
+        await interaction.response.send_message(
+            "運営者をサーバー内で確認できませんでした。運営者の参加状態を確認してください。",
+            ephemeral=True,
+        )
+        return
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(
+            view_channel=False,
+        ),
+        interaction.user: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            attach_files=True,
+            embed_links=True,
+        ),
+        operator: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_channels=True,
+        ),
+        bot_member: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_channels=True,
+            manage_messages=True,
+        ),
+    }
+
+    try:
+        new_channel = await guild.create_text_channel(
+            name=channel_name,
+            overwrites=overwrites,
+            topic=(
+                f"Team Owner ID: {interaction.user.id} | "
+                f"Team Type: {channel_type}"
+            ),
+            reason=f"{channel_name} 非公開チャンネル作成：{interaction.user}",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "BOTにチャンネル作成権限がありません。",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as error:
+        await interaction.response.send_message(
+            f"非公開チャンネルの作成に失敗しました。\n詳細：{error}",
+            ephemeral=True,
+        )
+        return
+
+    await new_channel.send(
+        f"{interaction.user.mention} さんと運営者だけが閲覧できるチャンネルです。"
+    )
+    await interaction.response.send_message(
+        f"非公開チャンネル **{channel_name}** を作成しました！\n{new_channel.mention}",
+        ephemeral=True,
     )
 
-    if not isinstance(category, discord.CategoryChannel):
-        return []
-
-    result = []
-
-    for channel in category.text_channels:
-        topic = channel.topic or ""
-
-        if f"Team Owner ID: {user_id}" in topic:
-            result.append(channel)
-
-    return result
-
 
 # ============================================================
-# 専用チャンネル作成ボタン
+# チーム結成チャンネル作成ボタン
 # ============================================================
 
 class TeamCreateButton(discord.ui.Button):
 
     def __init__(self):
         super().__init__(
-            label="専用チャンネルを作成",
+            label="チーム結成",
             style=discord.ButtonStyle.success,
             emoji="➕",
             custom_id="nexus:team:create",
         )
 
-    async def callback(
-        self,
-        interaction: discord.Interaction,
-    ):
-        guild = interaction.guild
-
-        if guild is None:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True,
-            )
-            return
-
-        category = guild.get_channel(
-            TEAM_APPLICATION_CATEGORY_ID
-        )
-
-        if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message(
-                "専用チャンネル用カテゴリが見つかりません。",
-                ephemeral=True,
-            )
-            return
-
-        existing = get_user_team_channels(
-            guild,
-            interaction.user.id,
-        )
-
-        if existing:
-            await interaction.response.send_message(
-                f"すでに専用チャンネルがあります：{existing[0].mention}",
-                ephemeral=True,
-            )
-            return
-
-        bot_member = guild.me
-
-        if bot_member is None:
-            bot_member = guild.get_member(bot.user.id)
-
-        if bot_member is None:
-            await interaction.response.send_message(
-                "BOTのサーバー情報を取得できませんでした。",
-                ephemeral=True,
-            )
-            return
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(
-                view_channel=False,
-            ),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                attach_files=True,
-                embed_links=True,
-            ),
-            bot_member: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True,
-                manage_messages=True,
-            ),
-        }
-
-        operator = guild.get_member(OWNER_ID)
-
-        if operator is None:
-            try:
-                operator = await guild.fetch_member(OWNER_ID)
-            except discord.HTTPException:
-                operator = None
-
-        if operator is not None:
-            overwrites[operator] = discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True,
-            )
-
-        channel_name = f"team-{interaction.user.id}"
-
-        try:
-            new_channel = await category.create_text_channel(
-                name=channel_name,
-                overwrites=overwrites,
-                topic=f"Team Owner ID: {interaction.user.id}",
-                reason=f"チーム専用チャンネル作成：{interaction.user}",
-            )
-
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "BOTにチャンネル作成権限がありません。",
-                ephemeral=True,
-            )
-            return
-
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "専用チャンネルの作成に失敗しました。",
-                ephemeral=True,
-            )
-            return
-
-        await new_channel.send(
-            f"{interaction.user.mention} さんの専用チャンネルです。\n"
-            "ここでチーム申請について相談してください。"
-        )
-
-        await interaction.response.send_message(
-            f"専用チャンネルを作成しました！\n{new_channel.mention}",
-            ephemeral=True,
+    async def callback(self, interaction: discord.Interaction):
+        await create_private_team_channel(
+            interaction,
+            "チーム結成",
+            "create",
         )
 
 
 # ============================================================
-# 専用チャンネル削除用セレクトメニュー
-# ============================================================
-
-class TeamChannelDeleteSelect(discord.ui.Select):
-
-    def __init__(
-        self,
-        channels: list[discord.TextChannel],
-        requester_id: int,
-    ):
-        self.requester_id = requester_id
-
-        options = [
-            discord.SelectOption(
-                label=channel.name[:100],
-                value=str(channel.id),
-                description=f"ID: {channel.id}",
-            )
-            for channel in channels[:25]
-        ]
-
-        super().__init__(
-            placeholder="削除する専用チャンネルを選択",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(
-        self,
-        interaction: discord.Interaction,
-    ):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message(
-                "このメニューを操作できるのは表示した本人だけです。",
-                ephemeral=True,
-            )
-            return
-
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True,
-            )
-            return
-
-        channel_id = int(self.values[0])
-        channel = interaction.guild.get_channel(channel_id)
-
-        if not isinstance(channel, discord.TextChannel):
-            await interaction.response.send_message(
-                "チャンネルが見つかりません。",
-                ephemeral=True,
-            )
-            return
-
-        topic = channel.topic or ""
-        owner_match = re.search(
-            r"Team Owner ID: (\d+)",
-            topic,
-        )
-
-        if owner_match is None:
-            await interaction.response.send_message(
-                "このチャンネルは専用チャンネルとして確認できません。",
-                ephemeral=True,
-            )
-            return
-
-        channel_owner_id = int(owner_match.group(1))
-
-        if (
-            not is_owner(interaction.user)
-            and channel_owner_id != interaction.user.id
-        ):
-            await interaction.response.send_message(
-                "このチャンネルを削除する権限がありません。",
-                ephemeral=True,
-            )
-            return
-
-        channel_name = channel.name
-
-        try:
-            await channel.delete(
-                reason=f"専用チャンネル削除：{interaction.user}",
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "BOTにチャンネル削除権限がありません。",
-                ephemeral=True,
-            )
-            return
-        except discord.HTTPException:
-            await interaction.response.send_message(
-                "チャンネルの削除に失敗しました。",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_message(
-            f"専用チャンネル **{channel_name}** を削除しました。",
-            ephemeral=True,
-        )
-
-
-# ============================================================
-# 専用チャンネル削除メニュー
-# ============================================================
-
-class TeamChannelDeleteView(discord.ui.View):
-
-    def __init__(
-        self,
-        channels: list[discord.TextChannel],
-        requester_id: int,
-    ):
-        super().__init__(timeout=120)
-
-        self.add_item(
-            TeamChannelDeleteSelect(
-                channels,
-                requester_id,
-            )
-        )
-
-
-# ============================================================
-# 専用チャンネル削除ボタン
+# チーム解散チャンネル作成ボタン
+# ※チャンネルを削除する機能ではありません
 # ============================================================
 
 class TeamDeleteButton(discord.ui.Button):
 
     def __init__(self):
         super().__init__(
-            label="専用チャンネルを削除",
+            label="チーム解散",
             style=discord.ButtonStyle.danger,
-            emoji="🗑️",
+            emoji="📝",
             custom_id="nexus:team:delete",
         )
 
-    async def callback(
-        self,
-        interaction: discord.Interaction,
-    ):
-        if interaction.guild is None:
-            await interaction.response.send_message(
-                "サーバー内で使用してください。",
-                ephemeral=True,
-            )
-            return
-
-        category = interaction.guild.get_channel(
-            TEAM_APPLICATION_CATEGORY_ID
-        )
-
-        if not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message(
-                "専用チャンネル用カテゴリが見つかりません。",
-                ephemeral=True,
-            )
-            return
-
-        if is_owner(interaction.user):
-            channels = list(category.text_channels)
-            channels = [
-                channel
-                for channel in channels
-                if re.search(
-                    r"Team Owner ID: \d+",
-                    channel.topic or "",
-                )
-            ]
-        else:
-            channels = get_user_team_channels(
-                interaction.guild,
-                interaction.user.id,
-            )
-
-        if not channels:
-            await interaction.response.send_message(
-                "削除できる専用チャンネルがありません。",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.send_message(
-            "削除する専用チャンネルを選択してください。",
-            view=TeamChannelDeleteView(
-                channels,
-                interaction.user.id,
-            ),
-            ephemeral=True,
+    async def callback(self, interaction: discord.Interaction):
+        await create_private_team_channel(
+            interaction,
+            "チーム解散",
+            "disband",
         )
 
 
 # ============================================================
-# 専用チャンネルパネル
+# 非公開チャンネル作成パネル
 # ============================================================
 
 class TeamApplicationPanelView(discord.ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)
-
         self.add_item(TeamCreateButton())
         self.add_item(TeamDeleteButton())
 
@@ -1775,12 +1577,13 @@ async def setup_team_panel(
     embed = discord.Embed(
         title="チーム申請・専用チャンネル",
         description=(
-            "チーム申請を行う場合は、下のボタンから専用チャンネルを作成してください。\n\n"
-            "➕ **専用チャンネルを作成**\n"
-            "あなた専用の相談部屋を作成します。\n\n"
-            "🗑️ **専用チャンネルを削除**\n"
-            "自分の専用チャンネルを選択して削除できます。\n\n"
-            "※専用チャンネルは本人と運営者だけが閲覧できます。"
+            "用途に合わせてボタンを押すと、非公開チャンネルを作成します。\n\n"
+            "➕ **チーム結成**\n"
+            "チーム結成について相談するチャンネルを作成します。\n\n"
+            "📝 **チーム解散**\n"
+            "チーム解散について相談するチャンネルを作成します。\n\n"
+            "※作成した本人と運営者だけが閲覧できます。\n"
+            "※ボタンを押しても既存チャンネルは削除されません。"
         ),
         color=discord.Color.blurple(),
     )
