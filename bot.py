@@ -74,32 +74,25 @@ SELECTABLE_ROLE_IDS = [
 ]
 
 # ============================================================
-# 選手ランク・ポイント設定
+# 選手ランク設定（ポイント制廃止・ランク帯で統一）
 # ============================================================
 
-RANK_POINTS = {
-    "Challenger": 8,
-    "Grandmaster": 7,
-    "Master": 6,
-    "Diamond I〜II": 5,
-    "Diamond III〜IV": 4,
-    "Emerald I〜II": 3,
-    "Emerald III〜IV": 2,
-    "Platinum I〜IV": 1,
-    "Coach": 0,
-}
-
-RANK_CHOICES = list(RANK_POINTS.keys())
+RANK_CHOICES = [
+    "Challenger",
+    "Grandmaster",
+    "Master",
+    "Diamond",
+    "Emerald",
+    "Platinum",
+]
 
 RANK_COLORS = {
     "Challenger": 0xE74C3C,
     "Grandmaster": 0x9B59B6,
     "Master": 0x3498DB,
-    "Diamond I〜II": 0x00BFFF,
-    "Diamond III〜IV": 0x1ABC9C,
-    "Emerald I〜II": 0x2ECC71,
-    "Emerald III〜IV": 0x27AE60,
-    "Platinum I〜IV": 0x48C9B0,
+    "Diamond": 0x00BFFF,
+    "Emerald": 0x2ECC71,
+    "Platinum": 0x48C9B0,
     "Coach": 0x95A5A6,
 }
 
@@ -403,10 +396,9 @@ class RegistrationRankSelect(discord.ui.Select):
         options = [
             discord.SelectOption(
                 label=rank,
-                description=f"{points} pt",
                 value=rank,
             )
-            for rank, points in RANK_POINTS.items()
+            for rank in RANK_CHOICES
         ]
 
         super().__init__(
@@ -537,7 +529,7 @@ class RegistrationModal(discord.ui.Modal):
                 f"## {game_name}\n**{self.rank}**\n希望ロール：**{roles_text}**",
                 self.rank,
             )
-            embed.add_field(name="RANK POINT", value=f"**{RANK_POINTS[self.rank]} pt**", inline=True)
+            embed.add_field(name="RANK", value=f"**{self.rank}**", inline=True)
             embed.add_field(name="RIOT ID", value=f"`{riot_id}`", inline=True)
             embed.add_field(name="SELF PR", value=str(self.self_pr.value).strip()[:1000] or "未記入", inline=False)
             embed.add_field(name="OP.GG", value=f"[プロフィールを確認する]({opgg_url})", inline=False)
@@ -586,8 +578,7 @@ class RegistrationModal(discord.ui.Modal):
             "riot_id": riot_id,
             "game_name": game_name,
             "rank": self.rank,
-            "points": RANK_POINTS[self.rank],
-            "roles": list(self.roles),
+             "roles": list(self.roles),
             "self_pr": str(self.self_pr.value),
         }
 
@@ -611,7 +602,7 @@ class RegistrationModal(discord.ui.Modal):
 
         embed.add_field(
             name="ランク",
-            value=f"{self.rank}（{RANK_POINTS[self.rank]} pt）",
+            value=self.rank,
             inline=True,
         )
 
