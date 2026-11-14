@@ -2199,10 +2199,13 @@ class CustomRecruitmentView(discord.ui.View):
         interaction: discord.Interaction,
         action: str,
     ):
+        # 先に応答をACKして3秒タイムアウトを回避
+        await interaction.response.defer(ephemeral=True)
+
         message = interaction.message
 
         if message is None or not message.embeds:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "募集情報を取得できませんでした。",
                 ephemeral=True,
             )
@@ -2211,7 +2214,7 @@ class CustomRecruitmentView(discord.ui.View):
         embed = message.embeds[0].copy()
 
         if "募集終了" in embed.title:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "この募集は終了しています。",
                 ephemeral=True,
             )
