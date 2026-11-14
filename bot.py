@@ -86,6 +86,38 @@ RANK_CHOICES = [
     "Platinum",
 ]
 
+# 選手登録時に付与するランクロール
+RANK_ROLE_IDS = {
+    "Challenger": 1569577861323427860,
+    "Grandmaster": 1569577673200762980,
+    "Master": 1566031942267314310,
+    "Diamond": 1566032052296613888,
+    "Emerald": 1566032229493248050,
+    # PlatinumのロールIDはEmeraldと同じ値が提示されたため未設定
+}
+
+def nickname_rank_label(rank: str) -> str:
+    if rank == "Emerald":
+        return "E"
+    if rank == "Platinum":
+        return "P"
+    return rank
+
+def registration_role_ids(rank: str, roles: list[str]) -> set[int]:
+    result = set()
+    if rank in RANK_ROLE_IDS:
+        result.add(RANK_ROLE_IDS[rank])
+    result.update(
+        POSITION_ROLE_IDS[position]
+        for position in roles
+        if position in POSITION_ROLE_IDS
+    )
+    return result
+
+REGISTRATION_MANAGED_ROLE_IDS = (
+    set(POSITION_ROLE_IDS.values()) | set(RANK_ROLE_IDS.values())
+)
+
 RANK_COLORS = {
     "Challenger": 0xE74C3C,
     "Grandmaster": 0x9B59B6,
@@ -106,7 +138,16 @@ MAIN_ROLE_CHOICES = [
     "MID",
     "ADC",
     "SUP",
+    "コーチ",
 ]
+
+POSITION_ROLE_IDS = {
+    "TOP": 1566031441807155210,
+    "JG": 1566031623181434900,
+    "MID": 1566031700809613423,
+    "ADC": 1566031772179763320,
+    "SUP": 1566031834234753075,
+}
 
 # ============================================================
 # 募集設定
@@ -499,11 +540,13 @@ class RegistrationModal(discord.ui.Modal):
         self.add_item(self.self_pr)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # API呼び出しが複数あるため、最初に応答期限を確保
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         riot_id = normalize_riot_id(str(self.riot_id.value))
 
         if make_opgg_url(riot_id) is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Riot IDの形式が正しくありません。\n"
                 "「名前#TAG」の形式で入力してください。",
                 ephemeral=True,
@@ -513,7 +556,7 @@ class RegistrationModal(discord.ui.Modal):
         guild = interaction.guild
 
         if guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "サーバー内で操作してください。",
                 ephemeral=True,
             )
@@ -541,22 +584,22 @@ class RegistrationModal(discord.ui.Modal):
                 except discord.HTTPException:
                     channel = None
             if channel is None:
-                await interaction.response.send_message("FA Cardチャンネルが見つかりません。", ephemeral=True)
+                await interaction.followup.send("FA Cardチャンネルが見つかりません。", ephemeral=True)
                 return
             try:
                 await channel.send(embed=embed, view=OPggLinkView(opgg_url))
             except discord.Forbidden:
-                await interaction.response.send_message("FA Cardチャンネルへの送信権限がありません。", ephemeral=True)
+                await interaction.followup.send("FA Cardチャンネルへの送信権限がありません。", ephemeral=True)
                 return
             except discord.HTTPException:
-                await interaction.response.send_message("FA Cardの発行に失敗しました。", ephemeral=True)
+                await interaction.followup.send("FA Cardの発行に失敗しました。", ephemeral=True)
                 return
-            await interaction.response.send_message("FA Cardを発行しました！", ephemeral=True)
+            await interaction.followup.send("FA Cardを発行しました！", ephemeral=True)
             return
 
         # Discordのニックネームは最大32文字
         nickname = (
-            f"{game_name} / {roles_text} / {self.rank}"
+            f"{game_name} / {roles_text} / {nickname_rank_label(self.rank)}"
         )[:32]
 
         nickname_result = "変更成功"
@@ -570,6 +613,41 @@ class RegistrationModal(discord.ui.Modal):
             nickname_result = "変更できませんでした（権限不足）"
         except discord.HTTPException:
             nickname_result = "変更できませんでした"
+
+        # ランク・ポジションロールを登録内容に合わせて同期
+        role_result = "反映成功"
+        try:
+            target_ids = registration_role_ids(self.rank, self.roles)
+            existing_managed = [
+                role for role in interaction.user.roles
+                if role.id in REGISTRATION_MANAGED_ROLE_IDS
+            ]
+            target_roles = []
+            missing_ids = []
+            for role_id in target_ids:
+                role = guild.get_role(role_id)
+                if role is None:
+                    missing_ids.append(role_id)
+                else:
+                    target_roles.append(role)
+
+            if existing_managed:
+                await interaction.user.remove_roles(
+                    *existing_managed,
+                    reason="Nexus選手登録：ロール同期",
+                )
+            if target_roles:
+                await interaction.user.add_roles(
+                    *target_roles,
+                    reason="Nexus選手登録：ランク・ポジション反映",
+                )
+            if missing_ids:
+                role_result = "一部未反映（ロールIDがサーバーにありません）"
+        except discord.Forbidden:
+            role_result = "失敗（BOT権限またはロール位置を確認）"
+        except discord.HTTPException:
+            logger.exception("選手登録ロール同期に失敗")
+            role_result = "失敗（Discord APIエラー）"
 
         # Card発行機能で参照する登録情報
         PLAYER_RECORDS[interaction.user.id] = {
@@ -641,7 +719,7 @@ class RegistrationModal(discord.ui.Modal):
                 check_channel = None
 
         if check_channel is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "登録情報は受け取りましたが、"
                 "確認用チャンネルが見つかりません。\n"
                 "運営者に連絡してください。",
@@ -652,16 +730,17 @@ class RegistrationModal(discord.ui.Modal):
         try:
             await check_channel.send(embed=embed)
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "確認用チャンネルへの送信権限がありません。",
                 ephemeral=True,
             )
             return
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "選手登録を受け付けました！\n"
             f"ニックネーム：`{nickname}`\n"
-            f"ニックネーム変更：{nickname_result}",
+            f"ニックネーム変更：{nickname_result}\n"
+            f"ロール反映：{role_result}",
             ephemeral=True,
         )
 
