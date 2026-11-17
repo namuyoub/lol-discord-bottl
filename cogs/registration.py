@@ -185,6 +185,9 @@ class RegistrationModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
 
+        # Modal送信の応答期限を確保し、以降はfollowupで結果を返す
+        await interaction.response.defer(ephemeral=True)
+
         riot_id = normalize_riot_id(str(self.riot_id.value))
 
         if make_opgg_url(riot_id) is None:
@@ -203,9 +206,6 @@ class RegistrationModal(discord.ui.Modal):
                 ephemeral=True,
             )
             return
-
-        # 以降のDiscord API処理に備えて先に応答を確定する
-        await interaction.response.defer(ephemeral=True)
 
         game_name = riot_id.rsplit("#", 1)[0].strip()
         roles_text = "・".join(self.roles)
