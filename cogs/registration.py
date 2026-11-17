@@ -251,7 +251,7 @@ class RegistrationModal(discord.ui.Modal):
             "Diamond": "D",
             "Master": "M",
             "Grandmaster": "GM",
-            "Challenger": "C",
+            "Challenger": "CH",
         }.get(self.rank, self.rank)
         nickname = (
             f"{game_name} / {roles_text} / {rank_nickname}"
