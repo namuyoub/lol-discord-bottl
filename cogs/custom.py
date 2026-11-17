@@ -301,9 +301,20 @@ class CustomRecruitmentModal(discord.ui.Modal):
             thinking=True,
         )
 
-        channel = await bot.fetch_channel(
-            CUSTOM_PANEL_CHANNEL_ID
-        )
+        try:
+            channel = await bot.fetch_channel(
+                CUSTOM_PANEL_CHANNEL_ID
+            )
+        except discord.HTTPException:
+            logger.exception(
+                "カスタム募集チャンネルの取得に失敗しました: %s",
+                CUSTOM_PANEL_CHANNEL_ID,
+            )
+            await interaction.followup.send(
+                "カスタム募集チャンネルを取得できませんでした。運営者に連絡してください。",
+                ephemeral=True,
+            )
+            return
 
         if not isinstance(channel, discord.TextChannel):
             await interaction.followup.send(
