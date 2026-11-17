@@ -245,14 +245,7 @@ class RegistrationModal(discord.ui.Modal):
             return
 
         # Discordのニックネームは最大32文字
-        rank_nickname = {
-            "Platinum": "P",
-            "Emerald": "E",
-            "Diamond": "D",
-            "Master": "M",
-            "Grandmaster": "GM",
-            "Challenger": "CH",
-        }.get(self.rank, self.rank)
+        rank_nickname = RANK_NICKNAME_LABELS.get(self.rank, self.rank)
         nickname = (
             f"{game_name} / {roles_text} / {rank_nickname}"
         )[:32]
