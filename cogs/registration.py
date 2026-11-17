@@ -201,7 +201,7 @@ class RegistrationModal(discord.ui.Modal):
         guild = interaction.guild
 
         if guild is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "サーバー内で操作してください。",
                 ephemeral=True,
             )
