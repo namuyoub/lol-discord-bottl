@@ -27,3 +27,41 @@ jobs:
         run: python -m compileall -q bot.py bot_core.py cogs
       - name: Import bot and feature modules
         run: python -c "import bot"
+      - name: Smoke-test commands and persistent views
+        run: |
+          python - <<'PY'
+          import bot
+          from bot_core import MAIN_ROLE_CHOICES
+          from cogs.registration import RegistrationStartView
+          from cogs.tournament import TournamentView
+          from cogs.team import TeamApplicationPanelView
+          from cogs.recruitment import RecruitmentView
+          from cogs.custom import CustomRecruitmentPanelView, CustomRecruitmentView
+          from cogs.roles import RolePanelView
+
+          expected_commands = {
+              "setup_registration",
+              "fa_card",
+              "tournament_create",
+              "setup_team_panel",
+              "setup_custom_panel",
+              "setup_role_panel",
+          }
+          registered_commands = {command.name for command in bot.bot.tree.get_commands()}
+          missing = expected_commands - registered_commands
+          assert not missing, f"Missing commands: {sorted(missing)}"
+          assert "コーチ" in MAIN_ROLE_CHOICES, "Coach option is missing"
+
+          views = [
+              RegistrationStartView(),
+              TournamentView(),
+              TeamApplicationPanelView(),
+              RecruitmentView(),
+              CustomRecruitmentPanelView(),
+              CustomRecruitmentView(),
+              RolePanelView(),
+          ]
+          assert all(view.timeout is None for view in views), "A persistent view has a timeout"
+          assert all(len(view.children) > 0 for view in views), "A persistent view has no components"
+          print(f"OK: {len(registered_commands)} commands, {len(views)} persistent views, coach option")
+          PY
