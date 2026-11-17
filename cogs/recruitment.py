@@ -223,7 +223,7 @@ class RecruitmentView(discord.ui.View):
                 )
             except (discord.Forbidden, discord.HTTPException):
                 pass
-        await interaction.response.send_message("参加状況を更新しました。", ephemeral=True)
+        await interaction.followup.send("参加状況を更新しました。", ephemeral=True)
 
     async def join_callback(
         self,
