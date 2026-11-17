@@ -31,7 +31,7 @@ jobs:
         run: |
           python - <<'PY'
           import bot
-          from bot_core import MAIN_ROLE_CHOICES
+          from bot_core import MAIN_ROLE_CHOICES, POSITION_ROLE_IDS, RANK_ROLE_IDS, RANK_NICKNAME_LABELS
           from cogs.registration import RegistrationStartView
           from cogs.tournament import TournamentView
           from cogs.team import TeamApplicationPanelView
@@ -51,6 +51,17 @@ jobs:
           missing = expected_commands - registered_commands
           assert not missing, f"Missing commands: {sorted(missing)}"
           assert "コーチ" in MAIN_ROLE_CHOICES, "Coach option is missing"
+          assert POSITION_ROLE_IDS.get("コーチ") == 1566029418843869276, "Coach role ID mismatch"
+          assert RANK_ROLE_IDS.get("Platinum") == 1566032393855311922, "Platinum role ID mismatch"
+          assert RANK_ROLE_IDS.get("Emerald") == 1566032229493248050, "Emerald role ID mismatch"
+          assert RANK_NICKNAME_LABELS == {
+              "Platinum": "P",
+              "Emerald": "E",
+              "Diamond": "D",
+              "Master": "M",
+              "Grandmaster": "GM",
+              "Challenger": "CH",
+          }, "Rank nickname labels mismatch"
 
           views = [
               RegistrationStartView(),
