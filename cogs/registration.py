@@ -198,11 +198,14 @@ class RegistrationModal(discord.ui.Modal):
         guild = interaction.guild
 
         if guild is None:
-            await interaction.followup.send(
+            await interaction.response.send_message(
                 "サーバー内で操作してください。",
                 ephemeral=True,
             )
             return
+
+        # 以降のDiscord API処理に備えて先に応答を確定する
+        await interaction.response.defer(ephemeral=True)
 
         game_name = riot_id.rsplit("#", 1)[0].strip()
         roles_text = "・".join(self.roles)
@@ -253,9 +256,6 @@ class RegistrationModal(discord.ui.Modal):
         nickname = (
             f"{game_name} / {roles_text} / {rank_nickname}"
         )[:32]
-
-        # API処理前に応答をACKし、Discordの3秒タイムアウトを防止
-        await interaction.response.defer(ephemeral=True)
 
         nickname_result = "変更成功"
 
