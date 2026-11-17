@@ -228,6 +228,8 @@ class RegistrationModal(discord.ui.Modal):
             if channel is None:
                 await interaction.followup.send("FA Cardチャンネルが見つかりません。", ephemeral=True)
                 return
+            # 遅延インポートにしてFA Card側との循環参照を防ぐ
+            from cogs.fa_card import OPggLinkView
             try:
                 await channel.send(embed=embed, view=OPggLinkView(opgg_url))
             except discord.Forbidden:
